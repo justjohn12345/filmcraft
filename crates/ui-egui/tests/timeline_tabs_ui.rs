@@ -170,7 +170,7 @@ fn a_right_click_on_a_tab_shows_it_and_opens_its_menu() {
     d.ok("ui.click", json!({"id": format!("timeline.tab.{b}"), "button": "right"}));
     d.frames(3);
     assert_eq!(d.active(), b);
-    assert!(d.has("panel.menu.Timeline.close") && d.has("panel.menu.Timeline.closeOthers") && d.has("panel.menu.Timeline.revealSequence"));
+    assert!(d.has("panel.menu.Timeline.close") && d.has("panel.menu.Timeline.closeOthers") && d.has("panel.menu.Timeline.sequence.revealInProject"));
     d.snapshot("timeline-tab-menu");
     d.click("panel.menu.Timeline.closeOthers");
     assert_eq!((d.open(), d.active()), (vec![b], b));
@@ -188,12 +188,14 @@ fn a_right_click_on_a_tab_shows_it_and_opens_its_menu() {
     d.ok("ui.key", json!({"key": "Escape"}));
     d.frames(3);
     assert!(!d.has("panel.menu.Timeline.close"), "Escape closes the menu");
-    // a right-click on another tab while the menu is open moves the menu to that tab
-    d.ok("ui.click", json!({"id": format!("timeline.tab.{b}"), "button": "right"}));
-    d.frames(3);
+    // a right-click on another tab while the menu is open moves the menu to that tab (the menu
+    // opens to the right of the pointer, so the tab to its left is still in reach)
     d.ok("ui.click", json!({"id": format!("timeline.tab.{main}"), "button": "right"}));
     d.frames(3);
-    assert!(d.has("panel.menu.Timeline.close") && d.active() == main);
+    assert_eq!(d.active(), main);
+    d.ok("ui.click", json!({"id": format!("timeline.tab.{b}"), "button": "right"}));
+    d.frames(3);
+    assert!(d.has("panel.menu.Timeline.close") && d.active() == b);
     d.click("panel.Program");
     // Close Panel from the menu closes the tab it was opened on
     d.show(main);

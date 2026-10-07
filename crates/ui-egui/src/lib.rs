@@ -16,6 +16,7 @@ pub mod header;
 pub mod i18n;
 pub mod icons;
 pub mod links;
+pub mod menu_layout;
 pub mod menus;
 pub mod panels;
 pub mod perf;

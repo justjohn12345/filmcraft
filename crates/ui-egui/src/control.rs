@@ -98,6 +98,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
             Err(e) => err(e),
         },
         "ui.menu.list" => ok(serde_json::to_value(crate::menus::menu_items(app)).unwrap_or_default()),
+        "ui.menu.tree" => ok(crate::menu_layout::tree(&crate::menus::menu_items(app))),
         "ui.inspect" => ok(inspect(app, ctx)),
         "perf.stats" => ok(crate::perf::stats(app)),
         "ui.elements" => {

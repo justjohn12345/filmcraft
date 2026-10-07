@@ -53,6 +53,7 @@ use filmcraft_project::ItemId;
 
 use crate::FilmcraftApp;
 use crate::dock::PanelKind;
+use crate::menu_layout::Entry::{self, Cmd, Rest, Sep, Sub, Tbd};
 use crate::theme::Tokens;
 
 pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rect) {
@@ -174,7 +175,114 @@ pub fn drag_ghost(app: &FilmcraftApp, ui: &egui::Ui) {
     }
 }
 
-/// The panel "≡" menu.
+/// What the menu of panel `p` holds below the entries every panel menu starts with, in Premiere
+/// Pro's order (observed in Premiere Pro 2026). `Cmd` runs an engine command; `Tbd` is an entry
+/// FilmCraft does not have yet. Panels not listed have only the common entries. The Project and
+/// Media Browser panels draw their own (`project::panel_menu`, `media_browser::panel_menu`).
+fn panel_layout(p: PanelKind) -> &'static [Entry] {
+    match p {
+        PanelKind::Program => &[Cmd("sequence.close"), Tbd("Close All")],
+        PanelKind::Source => &[Tbd("Close"), Tbd("Close All")],
+        PanelKind::EffectControls => &[
+            Cmd("presets.save"),
+            Sep,
+            Tbd("Effect Enabled"),
+            Sep,
+            Cmd("effects.remove"),
+            Tbd("Remove Effects…"),
+            Sep,
+            Tbd("Snap"),
+            Tbd("Snap To"),
+            Sep,
+            Tbd("Show Audio Time Units"),
+            Tbd("Time Ruler Numbers"),
+            Tbd("Loop During Audio-Only Playback"),
+            Sep,
+            Tbd("Pin to Clip"),
+            Sep,
+            Tbd("Manage Audio Plug-Ins…"),
+            Tbd("Manage Video Effects…"),
+        ],
+        PanelKind::Effects => &[
+            Tbd("New Custom Bin"),
+            Tbd("New Presets Bin"),
+            Tbd("Delete Custom Item"),
+            Sep,
+            Cmd("effects.setDefaultTransition"),
+            Tbd("Set Default Transition Duration…"),
+            Sep,
+            Cmd("presets.import"),
+            Cmd("presets.export"),
+            Tbd("Preset Properties…"),
+            Sep,
+            Tbd("Dynamic Lumetri Preset Previews"),
+            Sep,
+            Tbd("Manage Audio Plug-Ins…"),
+            Tbd("Manage Video Effects…"),
+        ],
+        PanelKind::Timeline => &[
+            Tbd("Work Area Bar"),
+            Tbd("Show Audio Time Units"),
+            Tbd("Audio Waveforms Use Label Color"),
+            Tbd("Rectified Audio Waveforms"),
+            Tbd("Logarithmic Waveform Scaling"),
+            Tbd("Time Ruler Numbers"),
+            Tbd("Start Time…"),
+            Sep,
+            Tbd("Video Head and Tail Thumbnails"),
+            Tbd("Video Head Thumbnails"),
+            Tbd("Continuous Video Thumbnails"),
+            Sep,
+            Tbd("Create Preset from Sequence…"),
+            Cmd("sequence.revealInProject"),
+            Cmd("media.linkMedia"),
+            Cmd("media.makeOffline"),
+            Sep,
+            Cmd("multicam.audioFollowsVideo"),
+            Cmd("multicam.selectionTopDown"),
+            Tbd("Multi-Camera Follows Nest Setting"),
+            Sep,
+            Tbd("Label"),
+        ],
+        _ => &[],
+    }
+}
+
+/// Draw `entries` of panel `p`'s menu. Returns true when a command ran.
+fn panel_entries(app: &mut FilmcraftApp, ui: &mut egui::Ui, p: PanelKind, entries: &[Entry]) -> bool {
+    let mut ran = false;
+    for e in entries {
+        match e {
+            Sep => crate::menus::separator(ui),
+            Tbd(label) => {
+                crate::menus::tbd(ui, label);
+            }
+            Cmd(id) => {
+                let Some(spec) = filmcraft_engine::command_specs().iter().find(|c| c.id == *id) else { continue };
+                let shortcut = app.session.shortcuts.primary(id);
+                let r = crate::menus::entry(ui, spec.label, shortcut.as_deref(), app.session.is_enabled(id), false);
+                app.auto.add(&format!("panel.menu.{}.{id}", p.id()), r.rect, spec.label);
+                if r.clicked() {
+                    if let Err(err) = app.session.execute(id, serde_json::json!({})) {
+                        app.ui.status = err.to_string();
+                    }
+                    ran = true;
+                }
+            }
+            Sub(name, inner) => {
+                ui.menu_button(crate::menus::row_label(name), |ui| {
+                    ui.set_min_width(200.0);
+                    ran |= panel_entries(app, ui, p, inner);
+                });
+            }
+            Rest => {}
+        }
+    }
+    ran
+}
+
+/// The panel "≡" menu: the entries every panel has (as Premiere Pro's panel menus start), then the
+/// panel's own.
 pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     drag_ghost(app, ui);
     // bins opened in new windows (Project panel)
@@ -182,62 +290,98 @@ pub fn panel_menu_popup(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let id = egui::Id::new("panel-menu");
     let Some((p, pos)) = ui.ctx().data(|d| d.get_temp::<(PanelKind, egui::Pos2)>(id)) else { return };
     let mut close = false;
-    let area = egui::Area::new(id.with("area")).order(egui::Order::Foreground).fixed_pos(pos).show(ui.ctx(), |ui| {
-        egui::Frame::popup(ui.style()).show(ui, |ui| {
-            ui.set_min_width(190.0);
-            // the Timeline's tabs are its open sequences: Close Panel closes the active one and
-            // keeps the panel (Premiere's wording and behaviour)
-            if p == PanelKind::Timeline && app.session.state.active_sequence.is_some() {
-                let r = ui.button("Close Panel");
-                app.auto.add("panel.menu.Timeline.close", r.rect, "Close Panel");
+    // a menu like those of the menu bar (same look, submenus open beside it); closing is done below
+    let popup =
+        egui::Popup::new(id.with("popup"), ui.ctx().clone(), egui::PopupAnchor::Position(pos), egui::LayerId::new(egui::Order::Foreground, id.with("layer")))
+            .kind(egui::PopupKind::Menu)
+            .layout(egui::Layout::top_down_justified(egui::Align::Min))
+            .style(crate::theme::menu_style)
+            .close_behavior(egui::PopupCloseBehavior::IgnoreClicks)
+            .open(true)
+            .show(|ui| {
+                ui.set_min_width(230.0);
+                let key = |k: &str| format!("panel.menu.{}.{k}", p.id());
+                // the Timeline's tabs are its open sequences: Close Panel closes the active one and
+                // keeps the panel (Premiere's wording and behaviour)
+                let timeline = p == PanelKind::Timeline && app.session.state.active_sequence.is_some();
+                let r = crate::menus::entry(ui, "Close Panel", None, true, false);
+                app.auto.add(&key("close"), r.rect, "Close Panel");
                 if r.clicked() {
-                    let _ = app.session.execute("sequence.close", serde_json::json!({}));
+                    if timeline {
+                        let _ = app.session.execute("sequence.close", serde_json::json!({}));
+                    } else {
+                        app.ui.dock.close(p);
+                    }
                     close = true;
                 }
-                let r = ui.add_enabled(app.session.state.open_sequences.len() > 1, egui::Button::new("Close Other Timeline Panels"));
-                app.auto.add("panel.menu.Timeline.closeOthers", r.rect, "Close Other Timeline Panels");
-                if r.clicked() {
-                    let _ = app.session.execute("sequence.closeOthers", serde_json::json!({}));
-                    close = true;
+                crate::menus::tbd(ui, "Undock Panel");
+                crate::menus::tbd(ui, "Close Other Panels in Group");
+                if timeline {
+                    let r = crate::menus::entry(ui, "Close Other Timeline Panels", None, app.session.state.open_sequences.len() > 1, false);
+                    app.auto.add(&key("closeOthers"), r.rect, "Close Other Timeline Panels");
+                    if r.clicked() {
+                        let _ = app.session.execute("sequence.closeOthers", serde_json::json!({}));
+                        close = true;
+                    }
                 }
-            } else if ui.button("Close Panel").clicked() {
-                app.ui.dock.close(p);
-                close = true;
-            }
-            if ui.button("Maximize Frame").clicked() {
-                app.ui.dock = crate::dock::DockNode::Tabs { panels: vec![p], active: 0 };
-                close = true;
-            }
-            if ui.button("Restore Workspace").clicked() {
-                let w = app.ui.workspace.clone();
-                app.set_workspace(&w);
-                close = true;
-            }
-            if p == PanelKind::Timeline {
-                ui.separator();
-                let r = ui.add_enabled(app.session.state.active_sequence.is_some(), egui::Button::new("Reveal Sequence in Project"));
-                app.auto.add("panel.menu.Timeline.revealSequence", r.rect, "Reveal Sequence in Project");
-                if r.clicked() {
-                    let _ = app.session.execute("sequence.revealInProject", serde_json::json!({}));
-                    close = true;
+                let group = ui.menu_button(crate::menus::row_label("Panel Group Settings"), |ui| {
+                    ui.set_min_width(200.0);
+                    crate::menus::tbd(ui, "Close Panel Group");
+                    crate::menus::tbd(ui, "Undock Panel Group");
+                    let r = crate::menus::entry(ui, "Maximize Panel Group", None, true, false);
+                    app.auto.add(&key("maximize"), r.rect, "Maximize Panel Group");
+                    if r.clicked() {
+                        app.ui.dock = crate::dock::DockNode::Tabs { panels: vec![p], active: 0 };
+                        close = true;
+                    }
+                    // the way back from a maximized group (Premiere toggles Maximize instead)
+                    let r = crate::menus::entry(ui, "Restore Workspace", None, true, false);
+                    app.auto.add(&key("restoreWorkspace"), r.rect, "Restore Workspace");
+                    if r.clicked() {
+                        let w = app.ui.workspace.clone();
+                        app.set_workspace(&w);
+                        close = true;
+                    }
+                    crate::menus::separator(ui);
+                    crate::menus::tbd(ui, "Stacked Panel Group");
+                    crate::menus::tbd(ui, "Solo Panels in Stack");
+                    crate::menus::tbd(ui, "Small Tabs");
+                });
+                app.auto.add(&key("groupSettings"), group.response.rect, "Panel Group Settings");
+                let own = panel_layout(p);
+                if !own.is_empty() {
+                    crate::menus::separator(ui);
+                    close |= panel_entries(app, ui, p, own);
                 }
-                ui.checkbox(&mut app.ui.timeline.show_thumbnails, "Video Thumbnails");
-                ui.checkbox(&mut app.ui.timeline.show_waveforms, "Audio Waveforms");
-            }
-            if p == PanelKind::Project {
-                ui.separator();
-                close |= project::panel_menu(app, ui);
-            }
-            if p == PanelKind::MediaBrowser {
-                ui.separator();
-                close |= media_browser::panel_menu(app, ui);
-            }
-        });
-    });
+                if p == PanelKind::Timeline {
+                    crate::menus::separator(ui);
+                    for (k, label, on) in
+                        [("thumbnails", "Video Thumbnails", app.ui.timeline.show_thumbnails), ("waveforms", "Audio Waveforms", app.ui.timeline.show_waveforms)]
+                    {
+                        let r = crate::menus::entry(ui, label, None, true, on);
+                        app.auto.add(&key(k), r.rect, label);
+                        if r.clicked() {
+                            match k {
+                                "thumbnails" => app.ui.timeline.show_thumbnails = !on,
+                                _ => app.ui.timeline.show_waveforms = !on,
+                            }
+                        }
+                    }
+                }
+                if p == PanelKind::Project {
+                    crate::menus::separator(ui);
+                    close |= project::panel_menu(app, ui);
+                }
+                if p == PanelKind::MediaBrowser {
+                    crate::menus::separator(ui);
+                    close |= media_browser::panel_menu(app, ui);
+                }
+            });
+    let outside = popup.as_ref().is_some_and(|r| r.response.clicked_elsewhere());
     // A click elsewhere or Escape closes the menu. The click that opened it is over the tab, not
     // the menu, and must not close it again in the same frame.
     let fresh = ui.ctx().data(|d| d.get_temp::<u64>(egui::Id::new("panel-menu-opened"))) == Some(ui.ctx().cumulative_frame_nr());
-    if close || (!fresh && area.response.clicked_elsewhere()) || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if close || (!fresh && outside) || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         ui.ctx().data_mut(|d| d.remove::<(PanelKind, egui::Pos2)>(id));
     }
 }

@@ -1,6 +1,7 @@
 //! Menus and UI-level commands. The menu bar is generated from the engine registry plus the UI
 //! command table below (commands that only affect the frontend: tools, playback, zoom, panels).
 //! `invoke` is the single entry point used by menus, shortcuts and the control channel.
+//! Where each command sits in its menu, and the separators, are in [`crate::menu_layout`].
 
 use serde_json::{Value, json};
 
@@ -418,7 +419,13 @@ pub fn menu_items(app: &FilmcraftApp) -> Vec<MenuItem> {
             "app.language.english" => it.checked = Some(app.ui.language == crate::i18n::Language::En),
             "app.language.japanese" => it.checked = Some(app.ui.language == crate::i18n::Language::Ja),
             "app.language.spanish" => it.checked = Some(app.ui.language == crate::i18n::Language::Es),
+            "sequence.snap" => it.checked = Some(app.session.state.snapping),
+            "sequence.linkedSelection" => it.checked = Some(app.session.state.linked_selection),
             _ => {}
+        }
+        // Window: the panels that are open are checked
+        if let Some(p) = it.id.strip_prefix("window.panel.").and_then(PanelKind::from_name) {
+            it.checked = Some(app.ui.dock.contains(p));
         }
         if it.id.starts_with("view.") {
             it.checked = crate::panels::monitor_view::checked(app, &it.id).or(crate::panels::menu_dialogs::checked(app, &it.id));
@@ -561,60 +568,97 @@ pub fn menu_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     let items = menu_items(app);
     let ctx = ui.ctx().clone();
     let mut clicked: Option<String> = None;
+    // automation: `menubar.<menu>` for the bar's buttons, `menu.<command id>` for the items of open menus
+    let mut elems: Vec<(String, egui::Rect, String)> = Vec::new();
     egui::MenuBar::new().config(egui::containers::menu::MenuConfig::new().style(crate::theme::menu_style)).ui(ui, |ui| {
         for top in MENUS {
-            let mine: Vec<&MenuItem> = items.iter().filter(|i| i.path.first().map(String::as_str) == Some(top)).collect();
-            ui.menu_button(app.ui.language.tr(top), |ui| {
+            let nodes = crate::menu_layout::menu(top, &items);
+            let r = ui.menu_button(app.ui.language.tr(top), |ui| {
                 ui.set_min_width(260.0);
-                if mine.is_empty() {
+                if nodes.is_empty() {
                     ui.add_enabled(false, egui::Button::new("(empty)"));
                 }
-                menu_level(ui, &mine, 1, &mut clicked);
+                menu_level(ui, &nodes, &mut clicked, &mut elems);
             });
+            elems.push((format!("menubar.{}", top.replace(' ', "")), r.response.rect, top.to_string()));
         }
     });
+    for (id, r, label) in elems {
+        app.auto.add(&id, r, &label);
+    }
     if let Some(id) = clicked {
         let _ = invoke(app, &ctx, &id, json!({}));
     }
 }
 
-/// One menu level: items whose path ends here, and a submenu (at its first item's position) for
-/// each deeper path segment, recursively (e.g. Clip ▸ Video Options ▸ Time Interpolation).
-fn menu_level(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mut Option<String>) {
-    let mut subs: Vec<&str> = Vec::new();
-    for it in items {
-        if let Some(sub) = it.path.get(depth).map(String::as_str) {
-            if subs.contains(&sub) {
-                continue;
+/// Draw one menu level laid out by [`crate::menu_layout`].
+fn menu_level(ui: &mut egui::Ui, nodes: &[crate::menu_layout::Node<'_>], clicked: &mut Option<String>, elems: &mut Vec<(String, egui::Rect, String)>) {
+    use crate::menu_layout::Node;
+    let language = ui.ctx().data(|d| d.get_temp::<crate::i18n::Language>(egui::Id::new("interface-language"))).unwrap_or_default();
+    for n in nodes {
+        match n {
+            Node::Sep => separator(ui),
+            Node::Item(it) => {
+                let r = menu_entry(ui, it);
+                elems.push((format!("menu.{}", it.id), r.rect, it.label.clone()));
+                if r.clicked() {
+                    *clicked = Some(it.id.clone());
+                    ui.close();
+                }
             }
-            subs.push(sub);
-            let inner: Vec<&MenuItem> = items.iter().copied().filter(|x| x.path.get(depth).map(String::as_str) == Some(sub)).collect();
-            let language = ui.ctx().data(|d| d.get_temp::<crate::i18n::Language>(egui::Id::new("interface-language"))).unwrap_or_default();
-            ui.menu_button(language.tr(sub), |ui| {
-                ui.set_min_width(220.0);
-                menu_level(ui, &inner, depth + 1, clicked);
-            });
-        } else if menu_entry(ui, it) {
-            *clicked = Some(it.id.clone());
-            ui.close();
+            // not there yet: its place in the menu, greyed out
+            Node::Tbd(label) => {
+                tbd(ui, language.tr(label));
+            }
+            Node::Sub(name, kids) => {
+                let r = ui.menu_button(row_label(language.tr(name)), |ui| {
+                    ui.set_min_width(220.0);
+                    menu_level(ui, kids, clicked, elems);
+                });
+                elems.push((format!("menu.submenu.{}", name.replace(' ', "")), r.response.rect, name.clone()));
+            }
         }
     }
 }
 
-fn menu_entry(ui: &mut egui::Ui, it: &MenuItem) -> bool {
-    // checkable items leave room for a checkmark drawn at the left
-    let label = if it.checked.is_some() { format!("      {}", it.label) } else { it.label.clone() };
-    let mut b = egui::Button::new(label);
-    if let Some(s) = &it.shortcut {
+fn menu_entry(ui: &mut egui::Ui, it: &MenuItem) -> egui::Response {
+    entry(ui, &it.label, it.shortcut.as_deref(), it.enabled, it.checked == Some(true))
+}
+
+/// Every row of a menu starts after this gutter, where a checked item has its checkmark (as the
+/// menus of macOS and Windows do).
+const GUTTER: &str = "     ";
+
+/// The label of a menu row or of a submenu's button: `label` after the checkmark gutter.
+pub fn row_label(label: &str) -> String {
+    format!("{GUTTER}{label}")
+}
+
+/// One row of a menu: the label, its shortcut at the right (`shortcut` as bound, e.g. `Cmd+K`), a
+/// checkmark in the gutter when `checked`.
+pub fn entry(ui: &mut egui::Ui, label: &str, shortcut: Option<&str>, enabled: bool, checked: bool) -> egui::Response {
+    let mut b = egui::Button::new(row_label(label));
+    if let Some(s) = shortcut.filter(|s| !s.is_empty()) {
         b = b.shortcut_text(shortcut_text(s));
     }
-    let r = ui.add_enabled(it.enabled, b);
-    if it.checked == Some(true) {
-        let c = r.rect.left_center() + egui::vec2(10.0, 0.0);
-        let col = ui.visuals().text_color();
+    let r = ui.add_enabled(enabled, b);
+    if checked {
+        let c = r.rect.left_center() + egui::vec2(11.0, 0.0);
+        let col = if r.hovered() && enabled { ui.visuals().widgets.hovered.fg_stroke.color } else { ui.visuals().text_color() };
         let st = egui::Stroke::new(1.5, col);
         ui.painter().line_segment([c + egui::vec2(-4.0, 0.0), c + egui::vec2(-1.0, 3.0)], st);
         ui.painter().line_segment([c + egui::vec2(-1.0, 3.0), c + egui::vec2(4.5, -3.5)], st);
     }
-    r.clicked()
+    r
+}
+
+/// The row of an item that is not there yet (see [`crate::menu_layout::Entry::Tbd`]): greyed out
+/// and marked "(TBD)".
+pub fn tbd(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add_enabled(false, egui::Button::new(format!("{GUTTER}{label} {}", crate::menu_layout::TBD)))
+}
+
+/// A separator line between groups of rows: inset from the menu's sides, with room above and below.
+pub fn separator(ui: &mut egui::Ui) {
+    ui.add(egui::Separator::default().spacing(9.0).shrink(6.0));
 }

@@ -240,12 +240,32 @@ impl Tokens {
 pub const MENU_TEXT_SIZE: f32 = 13.0;
 pub const MENU_TEXT: Color32 = Color32::from_rgb(0xde, 0xde, 0xde);
 
-/// Style of the menu bar's menus and their submenus (on top of egui's own menu style).
+/// Style of every menu (the menu bar's, their submenus and the panel menus), on top of egui's own
+/// menu style. The menus are drawn by FilmCraft on every platform; this gives them the shape of the
+/// platform's own: on macOS a rounded panel whose row under the pointer is a rounded bar in the
+/// accent colour, elsewhere a squarer panel with a quiet grey row.
 pub fn menu_style(s: &mut egui::Style) {
     egui::containers::menu::menu_style(s);
     s.text_styles.insert(TextStyle::Button, FontId::new(MENU_TEXT_SIZE, FontFamily::Proportional));
     s.text_styles.insert(TextStyle::Body, FontId::new(MENU_TEXT_SIZE, FontFamily::Proportional));
     s.spacing.item_spacing.y = 0.0;
+    s.spacing.button_padding = egui::vec2(8.0, 3.0);
+    s.spacing.menu_margin = egui::Margin::same(5);
+    let mac = cfg!(target_os = "macos");
+    s.visuals.menu_corner_radius = egui::CornerRadius::same(if mac { 8 } else { 4 });
+    let row = if mac { s.visuals.selection.bg_fill } else { s.visuals.widgets.hovered.weak_bg_fill };
+    for w in [&mut s.visuals.widgets.hovered, &mut s.visuals.widgets.active, &mut s.visuals.widgets.open] {
+        w.weak_bg_fill = row;
+        w.bg_fill = row;
+        w.corner_radius = egui::CornerRadius::same(if mac { 5 } else { 2 });
+        w.expansion = 0.0;
+        if mac {
+            w.fg_stroke.color = Color32::WHITE;
+        }
+    }
+    // separator lines
+    s.visuals.widgets.noninteractive.bg_stroke =
+        Stroke::new(1.0, if s.visuals.dark_mode { Color32::from_white_alpha(30) } else { Color32::from_black_alpha(40) });
     if s.visuals.dark_mode {
         s.visuals.override_text_color = Some(MENU_TEXT);
     }

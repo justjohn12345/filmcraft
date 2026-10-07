@@ -723,11 +723,7 @@ pub fn panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
     let has_sel = !app.session.browser.selection.is_empty();
     let mut close = false;
     let item = |app: &mut FilmcraftApp, ui: &mut egui::Ui, id: &str, label: &str, enabled: bool, checked: Option<bool>, shortcut: &str| -> bool {
-        let b = match checked {
-            Some(c) => egui::Button::selectable(c, label),
-            None => egui::Button::new(label),
-        };
-        let r = ui.add_enabled(enabled, b.shortcut_text(shortcut));
+        let r = crate::menus::entry(ui, label, Some(shortcut), enabled, checked == Some(true));
         app.auto.add(&format!("mediaBrowser.menu.{id}"), r.rect, label);
         r.clicked()
     };
@@ -762,7 +758,7 @@ pub fn panel_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) -> bool {
         app.session.browser.probes.clear();
         close = true;
     }
-    ui.separator();
+    crate::menus::separator(ui);
     let fav = prefs.favorites.contains(&dir);
     if item(app, ui, "favorite", if fav { "Remove from Favorites" } else { "Add to Favorites" }, true, None, "") {
         exec(app, &ctx, "mediaBrowser.favorite", json!({"remove": fav}));
