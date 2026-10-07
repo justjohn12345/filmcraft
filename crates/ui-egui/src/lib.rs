@@ -189,6 +189,8 @@ pub struct FilmcraftApp {
     pub panic_next_frame: bool,
     fonts_ready: bool,
     pub integrated_titlebar: bool,
+    /// When the native menu bar's enabled / checked state was last brought up to date (egui time).
+    pub menu_state_time: f64,
     pub last_timeline_width: f32,
     /// The sequence whose view `ui.timeline` holds, and that view as it was last exchanged with
     /// `session.state.timeline_views` (see `sync_timeline_view`).
@@ -380,6 +382,7 @@ impl FilmcraftApp {
             panic_next_frame: false,
             fonts_ready: false,
             integrated_titlebar: false,
+            menu_state_time: 0.0,
             last_timeline_width: 1000.0,
             timeline_view_of: None,
             timeline_view_last: None,
@@ -981,6 +984,19 @@ impl FilmcraftApp {
             let items = menus::menu_items(self);
             if let Some(hook) = self.hooks.shortcuts_changed.as_mut() {
                 hook(&items);
+            }
+        } else if self.hooks.shortcuts_changed.is_some() {
+            // A native menu bar also shows which items are enabled and checked. Keep it current
+            // while things happen: a few times a second, and once more after the last frame.
+            let now = ctx.input(|i| i.time);
+            if now - self.menu_state_time >= 0.2 {
+                self.menu_state_time = now;
+                let items = menus::menu_items(self);
+                if let Some(hook) = self.hooks.shortcuts_changed.as_mut() {
+                    hook(&items);
+                }
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(250));
             }
         }
         if ctx.egui_wants_keyboard_input() || self.dialog == Some(Dialog::Shortcuts) {
