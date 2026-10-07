@@ -26,6 +26,11 @@ fn accel(s: &str) -> Option<Accelerator> {
 /// items are enabled and which are checked.
 pub type ShortcutUpdater = Box<dyn FnMut(&[Item])>;
 
+/// A label as AppKit shows it: a single `&` would be taken as a mnemonic mark and dropped.
+fn text(label: &str) -> String {
+    label.replace('&', "&&")
+}
+
 /// A native item that follows a command.
 enum Native {
     Plain(MenuItem),
@@ -61,8 +66,8 @@ fn in_app_menu(id: &str) -> bool {
 fn item(it: &Item, built: &mut Built) -> Native {
     let accelerator = it.shortcut.as_deref().and_then(accel);
     let n = match it.checked {
-        Some(on) => Native::Check(CheckMenuItem::with_id(it.id.clone(), &it.label, it.enabled, on, accelerator)),
-        None => Native::Plain(MenuItem::with_id(it.id.clone(), &it.label, it.enabled, accelerator)),
+        Some(on) => Native::Check(CheckMenuItem::with_id(it.id.clone(), text(&it.label), it.enabled, on, accelerator)),
+        None => Native::Plain(MenuItem::with_id(it.id.clone(), text(&it.label), it.enabled, accelerator)),
     };
     let twin = match &n {
         Native::Check(c) => Native::Check(c.clone()),
@@ -93,9 +98,9 @@ fn fill(parent: &Submenu, nodes: &[Node<'_>], language: filmcraft_ui_egui::i18n:
                 Native::Check(c) => row(parent, &mut separator, &mut rows, &c),
                 Native::Plain(p) => row(parent, &mut separator, &mut rows, &p),
             },
-            Node::Tbd(label) => row(parent, &mut separator, &mut rows, &MenuItem::new(format!("{} {}", language.tr(label), TBD), false, None)),
+            Node::Tbd(label) => row(parent, &mut separator, &mut rows, &MenuItem::new(text(&format!("{} {}", language.tr(label), TBD)), false, None)),
             Node::Sub(name, kids) => {
-                let sub = Submenu::new(language.tr(name), true);
+                let sub = Submenu::new(text(language.tr(name)), true);
                 if fill(&sub, kids, language, built) > 0 {
                     built.titles.push((name.clone(), sub.clone()));
                     row(parent, &mut separator, &mut rows, &sub);
@@ -117,7 +122,7 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Sho
     built.titles.push(("Settings".into(), settings.clone()));
     for it in items.iter().filter(|i| i.id.starts_with("app.settings.")) {
         let label = it.label.trim_end_matches('…').to_string();
-        let mi = MenuItem::with_id(it.id.clone(), &label, true, it.shortcut.as_deref().and_then(accel));
+        let mi = MenuItem::with_id(it.id.clone(), text(&label), true, it.shortcut.as_deref().and_then(accel));
         built.native.push((it.id.clone(), Native::Plain(mi.clone()), Shown { label, ..Shown::of(it) }));
         let _ = settings.append(&mi);
     }
@@ -178,7 +183,7 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Sho
         if language != shown_language {
             shown_language = language;
             for (title, submenu) in &titles {
-                submenu.set_text(language.tr(title));
+                submenu.set_text(text(language.tr(title)));
             }
         }
         for (id, mi, shown) in &mut native {
@@ -194,12 +199,12 @@ pub fn install(app: &FilmcraftApp, ctx: egui::Context) -> (Receiver<String>, Sho
             }
             match mi {
                 Native::Plain(m) => {
-                    m.set_text(&now.label);
+                    m.set_text(text(&now.label));
                     m.set_enabled(now.enabled);
                     let _ = m.set_accelerator(now.shortcut.as_deref().and_then(accel));
                 }
                 Native::Check(m) => {
-                    m.set_text(&now.label);
+                    m.set_text(text(&now.label));
                     m.set_enabled(now.enabled);
                     m.set_checked(now.checked);
                     let _ = m.set_accelerator(now.shortcut.as_deref().and_then(accel));
