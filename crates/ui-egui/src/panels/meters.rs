@@ -1,7 +1,7 @@
 //! Audio Meters: stereo peak meters of the Mix (dB scale, peak hold) fed by the playing mixer
 //! graph, plus the BS.1770 loudness readout.
 
-use egui::{Align2, Rect, pos2, vec2};
+use egui::{Align2, Rect, Sense, pos2, vec2};
 
 use crate::FilmcraftApp;
 use crate::theme::Tokens;
@@ -39,6 +39,52 @@ pub(crate) fn feed_loudness(app: &mut FilmcraftApp) {
         }
         *n = now;
     }
+}
+
+/// The height of the meters' scale in dB (see [`crate::widgets::meter_bar`]).
+const RANGE_DB: u32 = 60;
+
+/// The meters' right-click menu, in Premiere's order. The scale is [`RANGE_DB`] tall and held peaks
+/// fall back by themselves: those two rows are checked, the other choices are not there yet.
+fn context_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
+    use crate::menus::{entry, separator, tbd};
+    let r = entry(ui, "Reset Indicators", None, true, false);
+    app.auto.add("audioMeters.menu.resetIndicators", r.rect, "Reset Indicators");
+    if r.clicked() {
+        super::mixer::reset_peaks(ui, filmcraft_render::mixer::MASTER.0);
+        ui.close();
+    }
+    for label in ["Show Valleys", "Show Color Gradient"] {
+        tbd(ui, label);
+    }
+    separator(ui);
+    for label in ["Mute All Audio", "Mute Source Monitor", "Mute Program Monitor"] {
+        tbd(ui, label);
+    }
+    separator(ui);
+    for label in ["Solo in Place", "Monitor Mono Channels", "Monitor Stereo Pairs"] {
+        tbd(ui, label);
+    }
+    separator(ui);
+    for db in [120, 96, 72, 60, 48, 24] {
+        let label = format!("{db} dB Range");
+        if db == RANGE_DB {
+            let r = entry(ui, &label, None, true, true);
+            app.auto.add(&format!("audioMeters.menu.range{db}"), r.rect, &label);
+            if r.clicked() {
+                ui.close();
+            }
+        } else {
+            tbd(ui, &label);
+        }
+    }
+    separator(ui);
+    let r = entry(ui, "Dynamic Peaks", None, true, true);
+    app.auto.add("audioMeters.menu.dynamicPeaks", r.rect, "Dynamic Peaks");
+    if r.clicked() {
+        ui.close();
+    }
+    tbd(ui, "Static Peaks");
 }
 
 fn lufs_text(v: f64) -> String {
@@ -108,4 +154,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.ctx().request_repaint();
     }
     app.auto.add("audioMeters", area, "Audio Meters");
+    // right-click on the meters or their scale (not the loudness readout): the meters' menu
+    let resp = ui.interact(Rect::from_min_max(rect.min, pos2(rect.max.x, rect.max.y - lufs_h)), egui::Id::new("audio-meters-area"), Sense::click());
+    crate::menus::context_menu(&resp, |ui| context_menu(app, ui));
 }

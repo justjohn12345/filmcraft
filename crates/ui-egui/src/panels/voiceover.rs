@@ -56,8 +56,8 @@ pub fn header_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, track: TrackId, 
         act = Some(Action::Toggle(track));
     }
     let resp = resp.on_hover_text("Voice-over record (right-click: Voice-Over Record Settings…)");
-    resp.context_menu(|ui| {
-        let b = ui.button("Voice-Over Record Settings…");
+    crate::menus::context_menu(&resp, |ui| {
+        let b = crate::menus::entry(ui, "Voice-Over Record Settings…", None, true, false);
         app.auto.add(&format!("{id}.settings"), b.rect, "Voice-Over Record Settings…");
         if b.clicked() {
             act = Some(Action::Settings);

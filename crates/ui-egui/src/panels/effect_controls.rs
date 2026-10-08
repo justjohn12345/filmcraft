@@ -3,7 +3,7 @@
 //! keyframe lane on the right. Also hosts the Lumetri Color panel body (same editor, grouped).
 
 use egui::{Align2, Color32, Pos2, Rect, Sense, Stroke, pos2, vec2};
-use filmcraft_project::{ClipId, EffectInstance, ParamKind, ParamValue, TrackItem};
+use filmcraft_project::{ClipId, EffectInstance, Interpolation, ParamKind, ParamValue, TrackItem};
 use filmcraft_time::Tick;
 use serde_json::{Value, json};
 
@@ -12,6 +12,50 @@ use crate::icons::{self, Icon};
 use crate::theme::Tokens;
 
 const ROW_H: f32 = 22.0;
+
+/// The interpolation rows of a keyframe's menu in Premiere's order (Ease In / Ease Out after a
+/// separator), each with its name in `effects.setInterpolation`.
+const KEYFRAME_INTERPOLATIONS: &[(Interpolation, &str)] = &[
+    (Interpolation::Linear, "linear"),
+    (Interpolation::Bezier, "bezier"),
+    (Interpolation::AutoBezier, "autoBezier"),
+    (Interpolation::ContinuousBezier, "continuousBezier"),
+    (Interpolation::Hold, "hold"),
+    (Interpolation::EaseIn, "easeIn"),
+    (Interpolation::EaseOut, "easeOut"),
+];
+
+/// The time ruler's menu, as Premiere's: a row's label and the command it runs on the sequence
+/// (`""`: not there yet); `None` is a separator.
+const RULER_MENU: &[Option<(&str, &str)>] = &[
+    Some(("Mark In", "markers.markIn")),
+    Some(("Mark Out", "markers.markOut")),
+    None,
+    Some(("Go To In", "markers.goToIn")),
+    Some(("Go To Out", "markers.goToOut")),
+    None,
+    Some(("Clear In", "markers.clearIn")),
+    Some(("Clear Out", "markers.clearOut")),
+    Some(("Clear In and Out", "markers.clearInOut")),
+    None,
+    Some(("Add Marker", "markers.add")),
+    Some(("Add Range Marker", "markers.addRange")),
+    Some(("Add Range Marker to In and Out", "markers.addRangeInOut")),
+    Some(("Go To Next Marker", "markers.goNext")),
+    Some(("Go To Previous Marker", "markers.goPrev")),
+    None,
+    Some(("Clear Selected Marker", "markers.clearCurrent")),
+    Some(("Clear Markers", "markers.clearAll")),
+    None,
+    Some(("Edit Marker…", "")),
+];
+
+/// Rows of a menu that Premiere has and FilmCraft does not yet: greyed out, in their place.
+fn tbd_rows(ui: &mut egui::Ui, labels: &[&str]) {
+    for label in labels {
+        crate::menus::tbd(ui, label);
+    }
+}
 
 fn selected_clip(app: &FilmcraftApp) -> Option<(ClipId, TrackItem, filmcraft_project::TrackKind)> {
     let seq = app.session.active_sequence()?;
@@ -73,6 +117,35 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     let body = Rect::from_min_max(pos2(rect.min.x, head.max.y + 4.0), pos2(split, rect.max.y - 26.0));
     let mut actions: Vec<(String, Value)> = Vec::new();
+    // right-click on the ruler: the sequence's In/Out and markers, at the playhead
+    app.auto.add("effectControls.ruler", scrub, "time ruler");
+    crate::menus::context_menu(&sresp, |ui| {
+        for row in RULER_MENU {
+            match *row {
+                None => crate::menus::separator(ui),
+                Some((label, "")) => {
+                    crate::menus::tbd(ui, label);
+                }
+                Some((label, id)) => {
+                    let shortcut = app.session.shortcuts.primary(id);
+                    let b = crate::menus::entry(ui, label, shortcut.as_deref(), app.session.is_enabled(id), false);
+                    app.auto.add(&format!("effectControls.ruler.{id}"), b.rect, label);
+                    if b.clicked() {
+                        actions.push((id.into(), json!({})));
+                        ui.close();
+                    }
+                }
+            }
+        }
+    });
+    // right-click on the lane where there is no keyframe (the keyframes, drawn later, are on top)
+    let empty = Rect::from_min_max(pos2(lane.min.x, scrub.max.y), lane.max);
+    let eresp = ui.interact(empty, egui::Id::new(("ec-lane", clip.0)), Sense::click());
+    crate::menus::context_menu(&eresp, |ui| {
+        tbd_rows(ui, &["Cut", "Copy", "Paste", "Clear", "Clear All Keyframes"]);
+        crate::menus::separator(ui);
+        crate::menus::tbd(ui, "Select All");
+    });
     let mut bui = ui.new_child(egui::UiBuilder::new().max_rect(body).id_salt("ec-body"));
     bui.set_clip_rect(Rect::from_min_max(body.min, pos2(rect.max.x, body.max.y)));
     let mt_now = it.source_time_at(ph.clamp(it.start, it.end() - Tick(1)));
@@ -126,17 +199,25 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
             let mut save_preset = false;
             let fx_id = e.effect.clone();
-            resp.context_menu(|ui| {
-                let sp = ui.button("Save Preset…");
+            crate::menus::context_menu(&resp, |ui| {
+                crate::menus::tbd(ui, "Rename…");
+                let sp = crate::menus::entry(ui, "Save Preset…", None, true, false);
                 app.auto.add(&format!("effectControls.effect.{fx_id}.savePreset"), sp.rect, "Save Preset…");
                 if sp.clicked() {
                     save_preset = true;
                     ui.close();
                 }
-                if !def.intrinsic && ui.button("Clear").clicked() {
+                crate::menus::separator(ui);
+                tbd_rows(ui, &["Cut", "Copy", "Paste"]);
+                // the fixed effects (Motion, Opacity…) stay on the clip
+                let cl = crate::menus::entry(ui, "Clear", None, !def.intrinsic, false);
+                app.auto.add(&format!("effectControls.effect.{fx_id}.clear"), cl.rect, "Clear");
+                if cl.clicked() {
                     actions.push(("effects.remove".into(), json!({"clip": clip.0, "index": idx})));
                     ui.close();
                 }
+                crate::menus::separator(ui);
+                crate::menus::tbd(ui, "Select All");
             });
             if save_preset {
                 crate::panels::presets::open_save(app, clip.0, vec![idx], def.name);
@@ -259,7 +340,28 @@ pub(crate) fn param_row(
         app.auto.add(&format!("effectControls.{}.{}.stopwatch", e.effect, pkey), sw, "Toggle animation");
     }
     x += 14.0;
-    ui.painter().text(pos2(x, r.center().y), Align2::LEFT_CENTER, pd.label, Tokens::ui(12.0), t.text);
+    let name = ui.painter().text(pos2(x, r.center().y), Align2::LEFT_CENTER, pd.label, Tokens::ui(12.0), t.text);
+    // right-click on the property's name; Save Preset… is for the effect it belongs to
+    let name = Rect::from_min_max(pos2(name.min.x, r.min.y), pos2(name.max.x, r.max.y));
+    let nresp = ui.interact(name, egui::Id::new(("pname", clip.0, idx, pkey)), Sense::click());
+    app.auto.add(&format!("effectControls.{}.{}.name", e.effect, pkey), name, pd.label);
+    let mut save_preset = false;
+    crate::menus::context_menu(&nresp, |ui| {
+        crate::menus::tbd(ui, "Rename…");
+        let sp = crate::menus::entry(ui, "Save Preset…", None, true, false);
+        app.auto.add(&format!("effectControls.{}.{}.savePreset", e.effect, pkey), sp.rect, "Save Preset…");
+        if sp.clicked() {
+            save_preset = true;
+            ui.close();
+        }
+        crate::menus::separator(ui);
+        tbd_rows(ui, &["Cut", "Copy", "Paste", "Clear"]);
+        crate::menus::separator(ui);
+        crate::menus::tbd(ui, "Select All");
+    });
+    if save_preset && let Some(def) = e.def() {
+        crate::panels::presets::open_save(app, clip.0, vec![idx], def.name);
+    }
     let vx = r.min.x + (r.width() * 0.5).max(150.0);
     let value = param.value_at(mt);
     let mut vui = ui.new_child(
@@ -377,7 +479,7 @@ pub(crate) fn param_row(
         }
         app.auto.add(&format!("effectControls.{}.{}.addKeyframe", e.effect, pkey), kr, "Add/Remove Keyframe");
     }
-    // keyframes in the lane: draggable diamonds; right-click for interpolation
+    // keyframes in the lane: draggable diamonds; right-click for Premiere's keyframe menu
     if param.is_animated() {
         let y = r.center().y;
         let dur = it.duration.0.max(1) as f64;
@@ -425,30 +527,33 @@ pub(crate) fn param_row(
             if resp.clicked() {
                 actions.push(("playhead.set".into(), json!({"time": tl.0})));
             }
-            resp.context_menu(|ui| {
-                ui.label(egui::RichText::new("Temporal Interpolation").color(t.text_dim));
-                for (label, key) in [
-                    ("Linear", "linear"),
-                    ("Bezier", "bezier"),
-                    ("Auto Bezier", "autoBezier"),
-                    ("Continuous Bezier", "continuousBezier"),
-                    ("Hold", "hold"),
-                    ("Ease In", "easeIn"),
-                    ("Ease Out", "easeOut"),
-                ] {
-                    if ui.button(label).clicked() {
+            crate::menus::context_menu(&resp, |ui| {
+                let kid = format!("effectControls.{}.{}.keyframe.{}", e.effect, pkey, k.time.0);
+                tbd_rows(ui, &["Cut", "Copy", "Paste"]);
+                let cl = crate::menus::entry(ui, "Clear", None, true, false);
+                app.auto.add(&format!("{kid}.clear"), cl.rect, "Clear");
+                if cl.clicked() {
+                    actions
+                        .push(("effects.deleteKeyframe".into(), with_mask(json!({"clip": clip.0, "effect": eff_json, "param": pd.id, "mediaTime": k.time.0}))));
+                    ui.close();
+                }
+                crate::menus::separator(ui);
+                crate::menus::tbd(ui, "Select All");
+                crate::menus::separator(ui);
+                // the keyframe's own interpolation is the checked row
+                for (interp, key) in KEYFRAME_INTERPOLATIONS {
+                    if *interp == Interpolation::EaseIn {
+                        crate::menus::separator(ui);
+                    }
+                    let b = crate::menus::entry(ui, interp.label(), None, true, k.interp == *interp);
+                    app.auto.add(&format!("{kid}.{key}"), b.rect, interp.label());
+                    if b.clicked() {
                         actions.push((
                             "effects.setInterpolation".into(),
                             with_mask(json!({"clip": clip.0, "effect": eff_json, "param": pd.id, "mediaTime": k.time.0, "interpolation": key})),
                         ));
                         ui.close();
                     }
-                }
-                ui.separator();
-                if ui.button("Clear").clicked() {
-                    actions
-                        .push(("effects.deleteKeyframe".into(), with_mask(json!({"clip": clip.0, "effect": eff_json, "param": pd.id, "mediaTime": k.time.0}))));
-                    ui.close();
                 }
             });
         }

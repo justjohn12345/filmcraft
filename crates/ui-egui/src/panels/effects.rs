@@ -174,8 +174,8 @@ fn folder_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, key: &str, depth: usize
 /// `effects.presetMenu.apply`). True when chosen.
 fn apply_menu(app: &mut FilmcraftApp, resp: &egui::Response) -> bool {
     let mut chosen = false;
-    resp.context_menu(|ui| {
-        let b = ui.button("Apply to Selected Clips");
+    crate::menus::context_menu(resp, |ui| {
+        let b = crate::menus::entry(ui, "Apply to Selected Clips", None, true, false);
         app.auto.add("effects.presetMenu.apply", b.rect, "Apply to Selected Clips");
         if b.clicked() {
             chosen = true;

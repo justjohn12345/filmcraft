@@ -123,8 +123,10 @@ pub fn effect_rows(
                 actions.push(("masks.select".into(), json!({"clip": clip.0, "effect": idx, "mask": k})));
             }
         }
-        resp.context_menu(|ui| {
-            if ui.button("Delete Mask").clicked() {
+        crate::menus::context_menu(&resp, |ui| {
+            let del = crate::menus::entry(ui, "Delete Mask", None, true, false);
+            app.auto.add(&format!("{base}.delete"), del.rect, "Delete Mask");
+            if del.clicked() {
                 actions.push(("masks.remove".into(), json!({"clip": clip.0, "effect": idx, "mask": k})));
                 ui.close();
             }
@@ -572,9 +574,9 @@ pub fn path_value(app: &mut FilmcraftApp, ui: &mut egui::Ui, clip: ClipId, effec
     icons::paint(ui.painter(), r.shrink(3.0), Icon::Wrench, if resp.hovered() { t.tab_text_active } else { t.icon });
     app.auto.add(&format!("{base}.trackMethod"), r, "Tracking method");
     let resp = resp.on_hover_text(format!("Tracking method: {}", m.track_method.label()));
-    egui::Popup::menu(&resp).show(|ui| {
+    egui::Popup::menu(&resp).style(crate::theme::menu_style).show(|ui| {
         for tm in filmcraft_project::TrackMethod::ALL {
-            if ui.selectable_label(tm == m.track_method, tm.label()).clicked() {
+            if crate::menus::entry(ui, tm.label(), None, true, tm == m.track_method).clicked() {
                 actions.push(("masks.set".into(), json!({"clip": clip.0, "effect": effect, "mask": k, "trackMethod": tm.label()})));
             }
         }

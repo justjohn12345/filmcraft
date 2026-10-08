@@ -42,16 +42,16 @@ pub fn folder_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui, filter: &str) -> O
         if resp.double_clicked() {
             action = Some(("presets.apply".to_string(), p.name.clone()));
         }
-        resp.context_menu(|ui| {
-            if !p.builtin && ui.button("Delete Preset").clicked() {
+        crate::menus::context_menu(&resp, |ui| {
+            if !p.builtin && crate::menus::entry(ui, "Delete Preset", None, true, false).clicked() {
                 action = Some(("presets.delete".to_string(), p.name.clone()));
                 ui.close();
             }
-            if ui.button("Export Preset…").clicked() {
+            if crate::menus::entry(ui, "Export Preset…", None, true, false).clicked() {
                 action = Some(("presets.export".to_string(), p.name.clone()));
                 ui.close();
             }
-            if ui.button("Import Presets…").clicked() {
+            if crate::menus::entry(ui, "Import Presets…", None, true, false).clicked() {
                 action = Some(("presets.import".to_string(), String::new()));
                 ui.close();
             }

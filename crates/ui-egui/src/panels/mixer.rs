@@ -125,6 +125,16 @@ pub fn poll_meters(app: &mut FilmcraftApp, ui: &egui::Ui) -> HashMap<u64, Vec<[f
     st
 }
 
+/// Drop the held peaks of a strip's meter to its levels (Audio Meters ▸ Reset Indicators).
+pub fn reset_peaks(ui: &egui::Ui, strip: u64) {
+    let id = egui::Id::new("mixer-meters");
+    let Some((frame, mut st)) = ui.data(|d| d.get_temp::<(u64, HashMap<u64, Vec<[f32; 2]>>)>(id)) else { return };
+    for m in st.get_mut(&strip).into_iter().flatten() {
+        m[1] = m[0];
+    }
+    ui.data_mut(|d| d.insert_temp(id, (frame, st)));
+}
+
 /// One bar per channel (level, peak hold) with a clip light on top; 5.1 meters carry channel names.
 fn draw_meters(ui: &egui::Ui, r: Rect, m: &[[f32; 2]], channels: usize, t: &Tokens) {
     let p = ui.painter();
@@ -225,14 +235,14 @@ pub fn track_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     app.auto.add("mixer.menu", menu_r, "Audio Track Mixer menu");
     let show_hide_id = egui::Id::new("mixer-show-hide-open");
     let mut show_hide: bool = ui.data(|d| d.get_temp(show_hide_id)).unwrap_or(false);
-    egui::Popup::menu(&mresp).show(|ui| {
-        let r = ui.button("Show/Hide Tracks…");
+    egui::Popup::menu(&mresp).style(crate::theme::menu_style).show(|ui| {
+        let r = crate::menus::entry(ui, "Show/Hide Tracks…", None, true, false);
         app.auto.add("mixer.menu.showHide", r.rect, "Show/Hide Tracks…");
         if r.clicked() {
             show_hide = true;
         }
         let on = app.ui.mixer_meter_input_only;
-        let r = ui.selectable_label(on, "Meter Input(s) Only");
+        let r = crate::menus::entry(ui, "Meter Input(s) Only", None, true, on);
         app.auto.add("mixer.menu.meterInputOnly", r.rect, "Meter Input(s) Only");
         if r.clicked() {
             app.ui.mixer_meter_input_only = !on;
@@ -385,31 +395,31 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
             let resp = slot_box(ui, r, &text, fx.is_some(), fx.is_some_and(|e| !e.enabled), &t, egui::Id::new((&ap, "fx", k)));
             app.auto.add(&format!("{ap}.fx.{k}"), r, &if text.is_empty() { format!("Effect slot {}", k + 1) } else { text.clone() });
             let can_add = fx.is_none() && k == tr.effects.len();
-            egui::Popup::menu(&resp).show(|ui| {
+            egui::Popup::menu(&resp).style(crate::theme::menu_style).show(|ui| {
                 ui.set_min_width(180.0);
                 match fx {
                     Some(e) => {
                         if crate::panels::audio_fx_editor::has_editor(&e.effect) {
-                            let r0 = ui.button("Edit…");
+                            let r0 = crate::menus::entry(ui, "Edit…", None, true, false);
                             app.auto.add(&format!("{ap}.fx.{k}.edit"), r0.rect, "Edit…");
                             if r0.clicked() {
                                 open_editor = Some(crate::panels::audio_fx_editor::FxTarget::Insert { strip: id.0, slot: k });
                             }
-                            ui.separator();
+                            crate::menus::separator(ui);
                         }
                         let on = e.enabled;
-                        let r1 = ui.selectable_label(!on, "Bypass");
+                        let r1 = crate::menus::entry(ui, "Bypass", None, true, !on);
                         app.auto.add(&format!("{ap}.fx.{k}.bypass"), r1.rect, "Bypass");
                         if r1.clicked() {
                             cx.cmd("mixer.setInsert", json!({"strip": sid, "slot": k, "enabled": !on}));
                         }
-                        let r2 = ui.selectable_label(e.post_fader, "Post-Fader");
+                        let r2 = crate::menus::entry(ui, "Post-Fader", None, true, e.post_fader);
                         app.auto.add(&format!("{ap}.fx.{k}.postFader"), r2.rect, "Post-Fader");
                         if r2.clicked() {
                             cx.cmd("mixer.setInsert", json!({"strip": sid, "slot": k, "postFader": !e.post_fader}));
                         }
-                        ui.separator();
-                        let r3 = ui.button("Remove Effect");
+                        crate::menus::separator(ui);
+                        let r3 = crate::menus::entry(ui, "Remove Effect", None, true, false);
                         app.auto.add(&format!("{ap}.fx.{k}.remove"), r3.rect, "Remove Effect");
                         if r3.clicked() {
                             cx.cmd("mixer.removeInsert", json!({"strip": sid, "slot": k}));
@@ -429,7 +439,7 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
                             let items: Vec<_> = fx.iter().filter(|d| d.category.get(1).copied().unwrap_or("") == folder).collect();
                             let mut add = |ui: &mut egui::Ui| {
                                 for d in &items {
-                                    let r = ui.button(d.name);
+                                    let r = crate::menus::entry(ui, d.name, None, true, false);
                                     app.auto.add(&format!("{ap}.fx.{k}.{}", d.id), r.rect, d.name);
                                     if r.clicked() {
                                         cx.cmd("mixer.addInsert", json!({"strip": sid, "effect": d.id}));
@@ -440,7 +450,7 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
                             if folder.is_empty() {
                                 add(ui);
                             } else {
-                                let mr = ui.menu_button(folder, |ui| add(ui));
+                                let mr = ui.menu_button(crate::menus::row_label(folder), |ui| add(ui));
                                 app.auto.add(&format!("{ap}.fx.{k}.folder.{folder}"), mr.response.rect, folder);
                             }
                         }
@@ -477,7 +487,7 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
             app.auto.add(&format!("{ap}.send.{k}"), r, &if text.is_empty() { format!("Send slot {}", k + 1) } else { text.clone() });
             let can_add = snd.is_none() && k == tr.mixer.sends.len();
             let tg = targets(seq, id);
-            egui::Popup::menu(&resp).show(|ui| {
+            egui::Popup::menu(&resp).style(crate::theme::menu_style).show(|ui| {
                 ui.set_min_width(180.0);
                 match snd {
                     Some(s) => {
@@ -487,18 +497,18 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
                         if sl.changed() {
                             cx.cmd("mixer.setSend", json!({"strip": sid, "send": k, "levelDb": lvl}));
                         }
-                        let r1 = ui.selectable_label(s.pre_fader, "Pre-Fader");
+                        let r1 = crate::menus::entry(ui, "Pre-Fader", None, true, s.pre_fader);
                         app.auto.add(&format!("{ap}.send.{k}.preFader"), r1.rect, "Pre-Fader");
                         if r1.clicked() {
                             cx.cmd("mixer.setSend", json!({"strip": sid, "send": k, "preFader": !s.pre_fader}));
                         }
-                        let r2 = ui.selectable_label(s.muted, "Mute Send");
+                        let r2 = crate::menus::entry(ui, "Mute Send", None, true, s.muted);
                         app.auto.add(&format!("{ap}.send.{k}.mute"), r2.rect, "Mute Send");
                         if r2.clicked() {
                             cx.cmd("mixer.setSend", json!({"strip": sid, "send": k, "muted": !s.muted}));
                         }
-                        ui.separator();
-                        let r3 = ui.button("Remove Send");
+                        crate::menus::separator(ui);
+                        let r3 = crate::menus::entry(ui, "Remove Send", None, true, false);
                         app.auto.add(&format!("{ap}.send.{k}.remove"), r3.rect, "Remove Send");
                         if r3.clicked() {
                             cx.cmd("mixer.removeSend", json!({"strip": sid, "send": k}));
@@ -507,14 +517,14 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
                     None if can_add => {
                         for s in &tg {
                             let lbl = format!("{} ({})", strip_label(seq, s.id), s.name);
-                            let r = ui.button(&lbl);
+                            let r = crate::menus::entry(ui, &lbl, None, true, false);
                             app.auto.add(&format!("{ap}.send.{k}.{}", strip_label(seq, s.id)), r.rect, &lbl);
                             if r.clicked() {
                                 cx.cmd("mixer.addSend", json!({"strip": sid, "target": s.id.0}));
                             }
                         }
                         if seq.submix_tracks.iter().all(|s| s.id != id) {
-                            let r = ui.button("New Submix");
+                            let r = crate::menus::entry(ui, "New Submix", None, true, false);
                             app.auto.add(&format!("{ap}.send.{k}.newSubmix"), r.rect, "New Submix");
                             if r.clicked() {
                                 let n = seq.submix_tracks.len();
@@ -538,9 +548,9 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
         let ir = Rect::from_min_size(pos2(x + 4.0, y), vec2(w - 8.0, 20.0));
         let iresp = crate::widgets::dropdown_text(ui, ir, tr.mixer.input_map.label(), &t, egui::Id::new((&ap, "input")));
         app.auto.add(&format!("{ap}.input"), ir, "Input channel mapping");
-        egui::Popup::menu(&iresp).show(|ui| {
+        egui::Popup::menu(&iresp).style(crate::theme::menu_style).show(|ui| {
             for m in InputMap::ALL {
-                let r = ui.selectable_label(m == tr.mixer.input_map, m.label());
+                let r = crate::menus::entry(ui, m.label(), None, true, m == tr.mixer.input_map);
                 app.auto.add(&format!("{ap}.input.{}", m.label()), r.rect, m.label());
                 if r.clicked() {
                     cx.cmd("mixer.setStrip", json!({"strip": sid, "inputMap": m.label()}));
@@ -553,14 +563,14 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
         let oresp = crate::widgets::dropdown_text(ui, or, &out_label, &t, egui::Id::new((&ap, "output")));
         app.auto.add(&format!("{ap}.output"), or, "Track output assignment");
         let tg = targets(seq, id);
-        egui::Popup::menu(&oresp).show(|ui| {
-            let r = ui.selectable_label(tr.mixer.output.is_none(), "Mix");
+        egui::Popup::menu(&oresp).style(crate::theme::menu_style).show(|ui| {
+            let r = crate::menus::entry(ui, "Mix", None, true, tr.mixer.output.is_none());
             app.auto.add(&format!("{ap}.output.Mix"), r.rect, "Mix");
             if r.clicked() {
                 cx.cmd("mixer.setStrip", json!({"strip": sid, "output": "Mix"}));
             }
             for s in &tg {
-                let r = ui.selectable_label(tr.mixer.output == Some(s.id), &s.name);
+                let r = crate::menus::entry(ui, &s.name, None, true, tr.mixer.output == Some(s.id));
                 app.auto.add(&format!("{ap}.output.{}", strip_label(seq, s.id)), r.rect, &s.name);
                 if r.clicked() {
                     cx.cmd("mixer.setStrip", json!({"strip": sid, "output": s.id.0}));
@@ -618,9 +628,9 @@ fn strip(app: &mut FilmcraftApp, ui: &mut egui::Ui, cx: &mut Ctx, id: TrackId, s
         ui.painter().rect_stroke(mr, 4.0, Stroke::new(1.0, RED), StrokeKind::Inside);
     }
     app.auto.add(&format!("{ap}.mode"), mr, &format!("Automation mode: {}", mode.label()));
-    egui::Popup::menu(&mresp).show(|ui| {
+    egui::Popup::menu(&mresp).style(crate::theme::menu_style).show(|ui| {
         for m in AutomationMode::ALL {
-            let r = ui.selectable_label(m == mode, m.label());
+            let r = crate::menus::entry(ui, m.label(), None, true, m == mode);
             app.auto.add(&format!("{ap}.mode.{}", m.label()), r.rect, m.label());
             if r.clicked() {
                 cx.cmd("mixer.setStrip", json!({"strip": sid, "mode": m.label()}));
@@ -946,9 +956,9 @@ pub fn clip_mixer(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         let mdr = Rect::from_min_size(pos2(sr.min.x + 4.0, sr.min.y + 2.0), vec2(sr.width() - 8.0, 16.0));
         let mdresp = crate::widgets::dropdown_text(ui, mdr, mode.label(), &t, egui::Id::new((&ap, "mode")));
         app.auto.add(&format!("{ap}.mode"), mdr, &format!("Clip automation mode: {}", mode.label()));
-        egui::Popup::menu(&mdresp).show(|ui| {
+        egui::Popup::menu(&mdresp).style(crate::theme::menu_style).show(|ui| {
             for m in AutomationMode::ALL {
-                let r = ui.selectable_label(m == mode, m.label());
+                let r = crate::menus::entry(ui, m.label(), None, true, m == mode);
                 app.auto.add(&format!("{ap}.mode.{}", m.label()), r.rect, m.label());
                 if r.clicked() {
                     acts.push(("clipMixer.setMode".into(), json!({"track": tr.id.0, "mode": m.label()})));

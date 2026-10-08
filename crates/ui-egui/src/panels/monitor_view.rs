@@ -9,8 +9,14 @@
 //! through the `view.*` UI commands, which [`route`] handles for `menus::invoke`. Commands act on
 //! `params.monitor` ("program" / "source"), else on the focused monitor (Program by default).
 //!
+//! The monitors' menus are here too ([`menu`]): the wrench menu and the right-click menus of the
+//! picture, the timecode and the time ruler, each a table of rows in Premiere Pro's order.
+//!
 //! Automation ids: `<monitor>.zoom`, `<monitor>.zoom.<fit|10|…|1600>`,
-//! `<monitor>.settings.<command suffix>` (wrench menu, e.g. `program.settings.display.alpha`),
+//! `<monitor>.settings.<key>` (wrench menu, e.g. `program.settings.display.alpha`),
+//! `<monitor>.picture.menu.<key>`, `<monitor>.scrubBar.menu.<key>` and `<monitor>.timecode.menu.<key>`
+//! (right-click menus), where `<key>` is the row's command id without a leading `view.` or
+//! `monitor.` and a submenu's button is `submenu.<Name>`,
 //! `<monitor>.ruler.top`, `<monitor>.ruler.left`, `<monitor>.guide.<n>`,
 //! `program.compare.<prev|next|set>`, `source.waveform`, and in the dialogs `guides.add.*`,
 //! `guides.save.*`, `guides.manage.*`.
@@ -265,8 +271,12 @@ fn save_template(app: &mut FilmcraftApp, w: Which, name: &str) -> Result<Value, 
 
 /// Menu checkmark state of a `view.*` command (None = not a toggle / radio item).
 pub fn checked(app: &FilmcraftApp, id: &str) -> Option<bool> {
+    checked_on(app, which_of(app, &Value::Null), id)
+}
+
+/// [`checked`] for monitor `w` (the monitors' own menus).
+fn checked_on(app: &FilmcraftApp, w: Which, id: &str) -> Option<bool> {
     let rest = id.strip_prefix("view.")?;
-    let w = which_of(app, &Value::Null);
     let v = view(app, w);
     if let Some(r) = rest.strip_prefix("playbackRes.") {
         return RES_NAMES.iter().find(|(n, _)| *n == r).map(|(_, x)| *x == v.res);
@@ -302,7 +312,12 @@ pub fn checked(app: &FilmcraftApp, id: &str) -> Option<bool> {
 
 /// Menu enablement of a `view.*` command.
 pub fn enabled(app: &FilmcraftApp, id: &str) -> bool {
-    let v = view(app, which_of(app, &Value::Null));
+    enabled_on(app, which_of(app, &Value::Null), id)
+}
+
+/// [`enabled`] for monitor `w` (the monitors' own menus).
+fn enabled_on(app: &FilmcraftApp, w: Which, id: &str) -> bool {
+    let v = view(app, w);
     match id {
         "view.lockGuides" | "view.clearGuides" | "view.guideTemplates.save" => !v.guides.is_empty(),
         _ => true,
@@ -635,76 +650,451 @@ pub fn compare_bar(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, rate: f
     }
 }
 
+/// One line of a monitor menu's layout.
+enum Row {
+    /// A separator line.
+    Sep,
+    /// A command and the label Premiere Pro gives it. `view.*` commands act on the menu's monitor,
+    /// `monitor.*` are toggles that have no command. On the Source monitor the In and Out commands
+    /// act on its clip, and a command it cannot run yet shows as [`Row::Tbd`].
+    Cmd(&'static str, &'static str),
+    /// An item FilmCraft does not have yet: shown disabled and marked "(TBD)".
+    Tbd(&'static str),
+    /// A submenu.
+    Sub(&'static str, &'static [Row]),
+    /// Rows that several menus share, in place.
+    Part(&'static [Row]),
+    /// Rows of the Program monitor only.
+    ProgramOnly(&'static [Row]),
+    /// Rows of the Source monitor only.
+    SourceOnly(&'static [Row]),
+}
+use Row::{Cmd, Part, ProgramOnly, Sep, SourceOnly, Sub, Tbd};
+
+// The menus below are in Premiere Pro's order (observed on the Program monitor of Premiere Pro
+// 2026; the Source monitor's are the same tables without the rows of a sequence).
+
+/// Mark In … Add Flash Cue Marker…: what the menus of the picture and of the time ruler share.
+const MARKS: &[Row] = &[
+    Cmd("markers.markIn", "Mark In"),
+    Cmd("markers.markOut", "Mark Out"),
+    ProgramOnly(&[Cmd("markers.markClip", "Mark Clip"), Cmd("markers.markSelection", "Mark Selection")]),
+    Sep,
+    Cmd("markers.goToIn", "Go to In"),
+    Cmd("markers.goToOut", "Go to Out"),
+    Sep,
+    Cmd("markers.clearIn", "Clear In"),
+    Cmd("markers.clearOut", "Clear Out"),
+    Cmd("markers.clearInOut", "Clear In and Out"),
+    Sep,
+    Cmd("markers.add", "Add Marker"),
+    Cmd("markers.addRange", "Add Range Marker"),
+    Cmd("markers.addRangeInOut", "Add Range Marker to In and Out"),
+    Cmd("markers.goNext", "Go to Next Marker"),
+    Cmd("markers.goPrev", "Go to Previous Marker"),
+    Sep,
+    Cmd("markers.clearCurrent", "Clear Selected Marker"),
+    Cmd("markers.clearAll", "Clear Markers"),
+    Sep,
+    Tbd("Edit Marker…"),
+    Sep,
+    Cmd("markers.addChapter", "Add Chapter Marker…"),
+    Cmd("markers.addFlashCue", "Add Flash Cue Marker…"),
+];
+
+const RESOLUTION: &[Row] = &[
+    Sub(
+        "Playback Resolution",
+        &[
+            Cmd("view.playbackRes.full", "Full"),
+            Cmd("view.playbackRes.half", "1/2"),
+            Cmd("view.playbackRes.quarter", "1/4"),
+            Cmd("view.playbackRes.eighth", "1/8"),
+            Cmd("view.playbackRes.sixteenth", "1/16"),
+        ],
+    ),
+    Sub(
+        "Paused Resolution",
+        &[
+            Cmd("view.pausedRes.full", "Full"),
+            Cmd("view.pausedRes.half", "1/2"),
+            Cmd("view.pausedRes.quarter", "1/4"),
+            Cmd("view.pausedRes.eighth", "1/8"),
+            Cmd("view.pausedRes.sixteenth", "1/16"),
+        ],
+    ),
+    Cmd("view.highQualityPlayback", "High Quality Playback"),
+];
+
+const CHANNELS: &[Row] =
+    &[Cmd("view.display.alpha", "Alpha"), Cmd("view.display.red", "Red"), Cmd("view.display.green", "Green"), Cmd("view.display.blue", "Blue")];
+
+/// The display modes after the channels: each monitor has its own.
+const MODES: &[Row] = &[
+    ProgramOnly(&[Cmd("view.display.multicam", "Multi-Camera"), Cmd("view.display.comparison", "Comparison View")]),
+    SourceOnly(&[Cmd("view.display.audioWaveform", "Audio Waveform"), Cmd("view.display.videoAndWaveform", "Video and Audio Waveform Split")]),
+];
+
+const MAGNIFICATION: &[Row] = &[
+    Cmd("view.magnification.fit", "Fit"),
+    Sep,
+    Cmd("view.magnification.10", "10%"),
+    Cmd("view.magnification.25", "25%"),
+    Cmd("view.magnification.50", "50%"),
+    Cmd("view.magnification.75", "75%"),
+    Cmd("view.magnification.100", "100%"),
+    Cmd("view.magnification.150", "150%"),
+    Cmd("view.magnification.200", "200%"),
+    Cmd("view.magnification.400", "400%"),
+    Cmd("view.magnification.800", "800%"),
+    Cmd("view.magnification.1600", "1600%"),
+];
+
+const MULTICAM: &[Row] = &[
+    Cmd("multicam.audioFollowsVideo", "Multi-Camera Audio Follows Video"),
+    Cmd("multicam.selectionTopDown", "Multi-Camera Selection Top Down"),
+    Cmd("multicam.showPreviewMonitor", "Show Multi-Camera Preview Monitor"),
+    Cmd("multicam.autoAdjustQuality", "Auto-Adjust Multi-Camera Playback Quality"),
+];
+
+/// Right-click on the picture.
+const PICTURE: &[Row] = &[
+    ProgramOnly(&[Cmd("sequence.lift", "Lift"), Cmd("sequence.extract", "Extract"), Sep]),
+    Part(MARKS),
+    Sep,
+    Tbd("Search Similar Frames"),
+    Sep,
+    Tbd("Fields"),
+    Sep,
+    Part(RESOLUTION),
+    Sep,
+    Sub("Display Mode", &[Cmd("view.display.composite", "Composite Video"), Part(CHANNELS), Part(MODES)]),
+    Sep,
+    Tbd("VR Video"),
+    Tbd("Monitor Ambisonics"),
+    Sep,
+    Sub("Magnification", MAGNIFICATION),
+    Sep,
+    Cmd("view.safeMargins", "Safe Margins"),
+    Tbd("Overlays"),
+    ProgramOnly(&[Sep, Part(MULTICAM)]),
+];
+
+/// Right-click on the time ruler (the scrub bar under the picture).
+const TIME_RULER: &[Row] = &[Part(MARKS), Sep, Tbd("Show Audio Time Units"), Tbd("Show Markers"), Tbd("Time Ruler Numbers")];
+
+/// The wrench ("Settings") button. FilmCraft's own rows are at the end.
+const WRENCH: &[Row] = &[
+    Tbd("Gang Source and Program"),
+    Sep,
+    Cmd("view.display.composite", "Composite Video"),
+    Sub("RGBA Channels", CHANNELS),
+    Part(MODES),
+    Sep,
+    Tbd("VR Video"),
+    Tbd("Monitor Ambisonics"),
+    Sep,
+    Tbd("Display First Field"),
+    Tbd("Display Second Field"),
+    Tbd("Display Both Fields"),
+    Sep,
+    Part(RESOLUTION),
+    Sep,
+    ProgramOnly(&[Tbd("Timecode Overlay During Edit")]),
+    Cmd("monitor.enableTransmit", "Enable Transmit"),
+    Sep,
+    Cmd("playback.loop", "Loop"),
+    Sep,
+    Cmd("monitor.showTransport", "Show Transport Controls"),
+    Tbd("Show Scroll Bars"),
+    Tbd("Show Audio Time Units"),
+    Tbd("Show Markers"),
+    Tbd("Show Dropped Frame Indicator"),
+    Tbd("Time Ruler Numbers"),
+    ProgramOnly(&[Tbd("Show Direct Manipulation During Playback")]),
+    Cmd("view.safeMargins", "Safe Margins"),
+    Tbd("Transparency Grid"),
+    ProgramOnly(&[Tbd("Global FX Mute")]),
+    Sep,
+    Cmd("view.showRulers", "Show Rulers"),
+    Cmd("view.showGuides", "Show Guides"),
+    Cmd("view.clearGuides", "Clear Guides"),
+    Sep,
+    ProgramOnly(&[
+        Cmd("view.snapInProgramMonitor", "Snap in Program Monitor"),
+        Sep,
+        Part(MULTICAM),
+        Cmd("multicam.transmitView", "Transmit Multi-Camera View"),
+        Cmd("multicam.editCamerasDialog", "Edit Cameras…"),
+        Sep,
+    ]),
+    Tbd("Overlays"),
+    Tbd("Overlay Settings"),
+    Sep,
+    Cmd("view.lockGuides", "Lock Guides"),
+    ProgramOnly(&[
+        Cmd("monitor.lumetriScopes", "Lumetri Scopes"),
+        Cmd("multicam.recordToggle", "Multi-Camera Record"),
+        Sub(
+            "Multi-Camera Layout",
+            &[
+                Cmd("multicam.gridLayout.auto", "Automatic"),
+                Cmd("multicam.gridLayout.2x2", "2 × 2"),
+                Cmd("multicam.gridLayout.3x3", "3 × 3"),
+                Cmd("multicam.gridLayout.4x4", "4 × 4"),
+            ],
+        ),
+    ]),
+];
+
+/// Which of a monitor's menus.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Menu {
+    /// Right-click on the picture.
+    Picture,
+    /// Right-click on the time ruler.
+    TimeRuler,
+    /// The wrench button.
+    Wrench,
+}
+
+/// One line of a menu as it is shown on a monitor.
+enum Line {
+    Sep,
+    Tbd(&'static str),
+    Item { id: &'static str, label: &'static str, enabled: bool, checked: bool },
+    Sub(&'static str, Vec<Line>),
+}
+
+/// How the row of command `id` shows on monitor `w`: (enabled, checked). None when FilmCraft
+/// cannot do it on that monitor yet.
+fn cmd_state(app: &FilmcraftApp, w: Which, id: &str) -> Option<(bool, bool)> {
+    if id.starts_with("view.") {
+        return Some((enabled_on(app, w, id), checked_on(app, w, id) == Some(true)));
+    }
+    let mc = &app.session.state.multicam_view;
+    if let Some(k) = id.strip_prefix("multicam.gridLayout.") {
+        return Some((true, mc.layout_name() == k));
+    }
+    let on = |b: bool| Some((true, b));
+    match id {
+        "monitor.showTransport" => on(view(app, w).show_transport),
+        "monitor.lumetriScopes" => on(app.ui.show_scopes),
+        "monitor.enableTransmit" => on(app.session.prefs.playback.enable_transmit),
+        "multicam.recordToggle" => on(app.ui.multicam_record),
+        "multicam.editCamerasDialog" => on(false),
+        "multicam.audioFollowsVideo" => on(app.session.state.multicam_audio_follows_video),
+        "multicam.selectionTopDown" => on(mc.top_down),
+        "multicam.showPreviewMonitor" => on(mc.show_preview),
+        "multicam.autoAdjustQuality" => on(mc.auto_quality),
+        "multicam.transmitView" => on(mc.transmit),
+        _ if w == Which::Source => source_state(app, id),
+        // (Program playback)
+        "playback.loop" => on(app.playback.looping),
+        _ => Some((app.session.is_enabled(id), false)),
+    }
+}
+
+/// The Source monitor's rows: the In and Out of its clip. (Its markers have no commands yet.)
+fn source_state(app: &FilmcraftApp, id: &str) -> Option<(bool, bool)> {
+    let v = filmcraft_engine::clip_ops::source_view(&app.session, app.session.state.source_item?)?;
+    let enabled = match id {
+        "markers.markIn" | "markers.markOut" | "markers.goToIn" | "markers.goToOut" => true,
+        "markers.clearIn" => v.mark_in.is_some(),
+        "markers.clearOut" => v.mark_out.is_some(),
+        "markers.clearInOut" => v.mark_in.is_some() || v.mark_out.is_some(),
+        _ => return None,
+    };
+    Some((enabled, false))
+}
+
+fn source_run(app: &mut FilmcraftApp, id: &str) -> Result<Value, String> {
+    let (cmd, params) = match id {
+        "markers.markIn" | "markers.markOut" => (id, json!({"target": "source"})),
+        "markers.goToIn" | "markers.goToOut" => {
+            crate::panels::monitor::source_nav(app, if id == "markers.goToIn" { "src.goIn" } else { "src.goOut" });
+            return Ok(Value::Null);
+        }
+        "markers.clearIn" => ("project.setMarks", json!({"in": null})),
+        "markers.clearOut" => ("project.setMarks", json!({"out": null})),
+        "markers.clearInOut" => ("project.setMarks", json!({"in": null, "out": null})),
+        _ => return Err(format!("`{id}` does not work in the Source monitor yet")),
+    };
+    app.session.execute(cmd, params).map_err(|e| e.to_string())
+}
+
+/// Run the row of command `id` (whose checkmark was `checked`) for monitor `w`.
+fn run(app: &mut FilmcraftApp, ctx: &egui::Context, w: Which, id: &str, checked: bool) {
+    let r = if id.starts_with("view.") {
+        route(app, id, &json!({"monitor": prefix(w)})).unwrap_or(Ok(Value::Null))
+    } else if let Some(k) = id.strip_prefix("multicam.gridLayout.") {
+        app.session.execute("multicam.gridLayout", json!({"layout": k})).map_err(|e| e.to_string())
+    } else {
+        match id {
+            "monitor.showTransport" => {
+                view_mut(app, w).show_transport = !checked;
+                Ok(Value::Null)
+            }
+            "monitor.lumetriScopes" => {
+                app.ui.show_scopes = !checked;
+                Ok(Value::Null)
+            }
+            "monitor.enableTransmit" => {
+                let mut next = app.session.prefs.clone();
+                next.playback.enable_transmit = !checked;
+                app.session.set_prefs(next).map(|_| Value::Null).map_err(|e| format!("saving preferences: {e}"))
+            }
+            "multicam.audioFollowsVideo"
+            | "multicam.selectionTopDown"
+            | "multicam.showPreviewMonitor"
+            | "multicam.autoAdjustQuality"
+            | "multicam.transmitView" => app.session.execute(id, json!({"enabled": !checked})).map_err(|e| e.to_string()),
+            _ if w == Which::Source && id.starts_with("markers.") => source_run(app, id),
+            _ => crate::menus::invoke(app, ctx, id, json!({})),
+        }
+    };
+    if let Err(e) = r {
+        app.ui.status = e;
+    }
+}
+
+/// The lines of `rows` for monitor `w`.
+fn lines(app: &FilmcraftApp, w: Which, rows: &'static [Row], out: &mut Vec<Line>) {
+    for r in rows {
+        match r {
+            Sep => out.push(Line::Sep),
+            Tbd(label) => out.push(Line::Tbd(label)),
+            Cmd(id, label) => out.push(match cmd_state(app, w, id) {
+                Some((enabled, checked)) => Line::Item { id, label, enabled, checked },
+                None => Line::Tbd(label),
+            }),
+            Sub(name, inner) => {
+                let mut kids = Vec::new();
+                lines(app, w, inner, &mut kids);
+                tidy(&mut kids);
+                if !kids.is_empty() {
+                    out.push(Line::Sub(name, kids));
+                }
+            }
+            Part(inner) => lines(app, w, inner, out),
+            ProgramOnly(inner) if w == Which::Program => lines(app, w, inner, out),
+            SourceOnly(inner) if w == Which::Source => lines(app, w, inner, out),
+            ProgramOnly(_) | SourceOnly(_) => {}
+        }
+    }
+}
+
+/// No separator first, last or after another (rows of the other monitor leave such).
+fn tidy(v: &mut Vec<Line>) {
+    v.dedup_by(|a, b| matches!((a, b), (Line::Sep, Line::Sep)));
+    if matches!(v.first(), Some(Line::Sep)) {
+        v.remove(0);
+    }
+    if matches!(v.last(), Some(Line::Sep)) {
+        v.pop();
+    }
+}
+
+/// The automation key of a row: its command id without `view.` / `monitor.`.
+fn row_key(id: &str) -> &str {
+    id.strip_prefix("view.").or_else(|| id.strip_prefix("monitor.")).unwrap_or(id)
+}
+
+type RowElems = Vec<(String, Rect, &'static str)>;
+
+fn draw(app: &FilmcraftApp, ui: &mut egui::Ui, shown: &[Line], elems: &mut RowElems, clicked: &mut Option<(&'static str, bool)>) {
+    for l in shown {
+        match l {
+            Line::Sep => crate::menus::separator(ui),
+            Line::Tbd(label) => {
+                crate::menus::tbd(ui, label);
+            }
+            Line::Item { id, label, enabled, checked } => {
+                let r = crate::menus::entry(ui, label, app.session.shortcuts.primary(id).as_deref(), *enabled, *checked);
+                elems.push((row_key(id).to_string(), r.rect, *label));
+                if r.clicked() {
+                    *clicked = Some((*id, *checked));
+                    ui.close();
+                }
+            }
+            Line::Sub(name, kids) => {
+                let r = ui.menu_button(crate::menus::row_label(name), |ui| draw(app, ui, kids, elems, clicked));
+                elems.push((format!("submenu.{}", name.replace(' ', "")), r.response.rect, *name));
+            }
+        }
+    }
+}
+
+/// Draw menu `m` of monitor `w` and run the row that is clicked.
+pub fn menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, m: Menu) {
+    let (rows, base) = match m {
+        Menu::Picture => (PICTURE, "picture.menu"),
+        Menu::TimeRuler => (TIME_RULER, "scrubBar.menu"),
+        Menu::Wrench => (WRENCH, "settings"),
+    };
+    let mut shown = Vec::new();
+    lines(app, w, rows, &mut shown);
+    tidy(&mut shown);
+    let mut elems: RowElems = Vec::new();
+    let mut clicked = None;
+    // these menus are as long as Premiere's: in a window that is less tall they scroll
+    let max_height = (ui.ctx().content_rect().height() - 24.0).max(120.0);
+    egui::ScrollArea::vertical().max_height(max_height).show(ui, |ui| {
+        ui.set_min_width(240.0);
+        draw(app, ui, &shown, &mut elems, &mut clicked);
+    });
+    let pfx = prefix(w);
+    for (key, r, label) in elems {
+        app.auto.add(&format!("{pfx}.{base}.{key}"), r, label);
+    }
+    if let Some((id, checked)) = clicked {
+        let ctx = ui.ctx().clone();
+        run(app, &ctx, w, id, checked);
+    }
+}
+
+/// A monitor's wrench menu (display modes, resolutions, what the monitor shows, rulers, guides,
+/// snap, multi-camera).
+pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
+    menu(app, ui, w, Menu::Wrench);
+}
+
+/// The right-click menu of a monitor's timecode: the time display formats, of which FilmCraft has
+/// the timecode of the sequence's (or clip's) frame rate. Named as Premiere Pro names them.
+pub fn timecode_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which, rate: filmcraft_time::FrameRate, drop_frame: bool) {
+    ui.set_min_width(240.0);
+    let timecode = if rate.supports_drop_frame() {
+        format!("{} fps {} Timecode", rate.label(), if drop_frame { "Drop-Frame" } else { "Non-Drop-Frame" })
+    } else {
+        format!("{} fps Timecode", rate.timecode_base())
+    };
+    let r = crate::menus::entry(ui, &timecode, None, true, true);
+    app.auto.add(&format!("{}.timecode.menu.timecode", prefix(w)), r.rect, &timecode);
+    if r.clicked() {
+        ui.close();
+    }
+    for label in ["29.97 fps Non-Drop-Frame Timecode", "Feet + Frames 16 mm", "Feet + Frames 35 mm", "Frames"] {
+        if label != timecode {
+            crate::menus::tbd(ui, label);
+        }
+    }
+}
+
 type Picks = Vec<(String, Rect, String, bool)>;
 
 fn pick(ui: &mut egui::Ui, out: &mut Picks, key: &str, label: &str, on: bool) {
-    let r = ui.selectable_label(on, label);
+    let r = crate::menus::entry(ui, label, None, true, on);
     out.push((key.to_string(), r.rect, label.to_string(), r.clicked()));
-}
-
-/// The view items of a monitor's wrench menu (display modes, resolutions, rulers, guides, snap).
-pub fn wrench_items(app: &mut FilmcraftApp, ui: &mut egui::Ui, w: Which) {
-    let v = view(app, w).clone();
-    let mode = v.display_mode();
-    let mut out: Picks = Vec::new();
-    pick(ui, &mut out, "display.composite", "Composite Video", mode == Some(DisplayMode::Composite));
-    ui.menu_button("RGBA Channels", |ui| {
-        for (k, l, m) in [
-            ("alpha", "Alpha", DisplayMode::Alpha),
-            ("red", "Red", DisplayMode::Red),
-            ("green", "Green", DisplayMode::Green),
-            ("blue", "Blue", DisplayMode::Blue),
-        ] {
-            pick(ui, &mut out, &format!("display.{k}"), l, mode == Some(m));
-        }
-    });
-    if w == Which::Program {
-        pick(ui, &mut out, "display.multicam", "Multi-Camera", v.multicam);
-        pick(ui, &mut out, "display.comparison", "Comparison View", mode == Some(DisplayMode::Comparison));
-    } else {
-        pick(ui, &mut out, "display.audioWaveform", "Audio Waveform", mode == Some(DisplayMode::AudioWaveform));
-        pick(ui, &mut out, "display.videoAndWaveform", "Video and Audio Waveform Split", mode == Some(DisplayMode::VideoAndWaveform));
-    }
-    ui.separator();
-    ui.menu_button("Playback Resolution", |ui| {
-        for (k, r) in RES_NAMES {
-            pick(ui, &mut out, &format!("playbackRes.{k}"), r.label(), v.res == r);
-        }
-    });
-    ui.menu_button("Paused Resolution", |ui| {
-        for (k, r) in RES_NAMES {
-            pick(ui, &mut out, &format!("pausedRes.{k}"), r.label(), v.paused_res == r);
-        }
-    });
-    pick(ui, &mut out, "highQualityPlayback", "High Quality Playback", v.high_quality);
-    ui.separator();
-    pick(ui, &mut out, "showRulers", "Show Rulers", v.show_rulers);
-    pick(ui, &mut out, "showGuides", "Show Guides", v.show_guides);
-    if !v.guides.is_empty() {
-        pick(ui, &mut out, "lockGuides", "Lock Guides", v.lock_guides);
-        pick(ui, &mut out, "clearGuides", "Clear Guides", false);
-    }
-    if w == Which::Program {
-        pick(ui, &mut out, "snapInProgramMonitor", "Snap in Program Monitor", v.snap);
-    }
-    ui.separator();
-    let pfx = prefix(w);
-    for (key, r, label, clicked) in out {
-        app.auto.add(&format!("{pfx}.settings.{key}"), r, &label);
-        if clicked && let Some(Err(e)) = route(app, &format!("view.{key}"), &json!({"monitor": pfx})) {
-            app.ui.status = e;
-        }
-    }
 }
 
 /// The magnification popup of a monitor's zoom dropdown.
 pub fn zoom_menu(app: &mut FilmcraftApp, resp: &egui::Response, w: Which) {
     let zoom = view(app, w).zoom;
     let mut out: Picks = Vec::new();
-    egui::Popup::menu(resp).show(|ui| {
+    egui::Popup::menu(resp).style(crate::theme::menu_style).show(|ui| {
         ui.set_min_width(80.0);
         pick(ui, &mut out, "fit", "Fit", zoom.is_none());
-        ui.separator();
+        crate::menus::separator(ui);
         for (k, z) in ZOOMS {
             pick(ui, &mut out, k, &format!("{k}%"), zoom == Some(z));
         }

@@ -129,6 +129,9 @@ fn the_clip_menu_offers_multi_camera_and_reveal_in_project() {
     d.ok("ui.click", json!({"id": format!("timeline.clip.{clip}"), "button": "right"}));
     d.frames(3);
     assert!(d.has("timeline.clipMenu.clip.multicam"));
+    // the menu holds Premiere's rows and is taller than the window: Reveal in Project is reached by scrolling
+    d.ok("ui.scroll", json!({"id": "timeline.clipMenu.clip.multicam", "dy": -2000.0}));
+    d.frames(6);
     assert!(d.has("timeline.clipMenu.clip.revealInProject"));
     d.click("timeline.clipMenu.clip.revealInProject");
     assert_eq!(d.app().session.state.project_selection, vec![item]);

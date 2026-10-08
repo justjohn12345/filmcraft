@@ -109,15 +109,15 @@ fn captions(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let label = format!("C{} · {}", track_idx + 1, track.name);
     let presp = crate::widgets::dropdown_text(ui, picker, &label, &t, egui::Id::new("text-cap-track-picker"));
     app.auto.add("text.captions.track", picker, "Caption track");
-    egui::Popup::menu(&presp).show(|ui| {
+    egui::Popup::menu(&presp).style(crate::theme::menu_style).show(|ui| {
         for (i, tr) in seq.caption_tracks.iter().enumerate() {
-            if ui.selectable_label(i == track_idx, format!("C{} · {} ({})", i + 1, tr.name, tr.format.label())).clicked() {
+            if crate::menus::entry(ui, &format!("C{} · {} ({})", i + 1, tr.name, tr.format.label()), None, true, i == track_idx).clicked() {
                 ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("text-cap-track"), i));
             }
         }
-        ui.separator();
+        crate::menus::separator(ui);
         for f in CaptionFormat::ALL {
-            if ui.button(format!("New {} track", f.label())).clicked() {
+            if crate::menus::entry(ui, &format!("New {} track", f.label()), None, true, false).clicked() {
                 actions.push(("captions.newTrack".into(), json!({"format": f.label()})));
             }
         }

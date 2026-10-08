@@ -250,6 +250,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     if let Some((top, left)) = ruler_rects {
         monitor_view::rulers(app, ui, which, top, left, video_area, pic, frame_size);
     }
+    picture_menu(ui, &pic_resp, pic.intersect(video_area), |ui| monitor_view::menu(app, ui, which, monitor_view::Menu::Picture));
     if pic_resp.double_clicked() && which == Which::Source {
         // (Premiere opens the clip's settings; we show info)
         app.ui.status = name.clone();
@@ -259,7 +260,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     let row1 = Rect::from_min_size(pos2(rect.min.x + 14.0, rect.max.y - controls_h + 2.0), vec2(rect.width() - 28.0, 26.0));
     let tc = format_time(time, rate, drop_frame, TimeDisplay::Timecode, 48000);
     ui.painter().text(pos2(row1.min.x, row1.center().y), Align2::LEFT_CENTER, &tc, Tokens::timecode(), t.timecode);
-    app.auto.add(&format!("{prefix}.timecode"), Rect::from_min_size(row1.min, vec2(110.0, row1.height())), &tc);
+    let tc_rect = Rect::from_min_size(row1.min, vec2(110.0, row1.height()));
+    app.auto.add(&format!("{prefix}.timecode"), tc_rect, &tc);
+    let tc_resp = ui.interact(tc_rect, egui::Id::new((prefix, "timecode")), Sense::click());
+    crate::menus::context_menu(&tc_resp, |ui| monitor_view::timecode_menu(app, ui, which, rate, drop_frame));
     let dur_tc = format_time(
         mark_out.map(|o| o + rate.frame_duration()).unwrap_or(duration) - mark_in.unwrap_or(Tick::ZERO),
         rate,
@@ -281,9 +285,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     let rr = Rect::from_min_size(pos2(row1.max.x - 196.0, row1.min.y), vec2(62.0, 24.0));
     let rresp = crate::widgets::dropdown_text(ui, rr, res.label(), &t, egui::Id::new((prefix, "res")));
     app.auto.add(&format!("{prefix}.resolution"), rr, "Select Playback Resolution");
-    egui::Popup::menu(&rresp).show(|ui| {
+    egui::Popup::menu(&rresp).style(crate::theme::menu_style).show(|ui| {
         for r in PlaybackRes::ALL {
-            if ui.selectable_label(r == res, r.label()).clicked() {
+            if crate::menus::entry(ui, r.label(), None, true, r == res).clicked() {
                 monitor_view::view_mut(app, which).res = r;
             }
         }
@@ -292,47 +296,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     let wresp = ui.interact(wr, egui::Id::new((prefix, "wrench")), Sense::click());
     icons::paint(ui.painter(), wr.shrink(4.0), Icon::Wrench, if wresp.hovered() { t.tab_text_active } else { t.icon });
     app.auto.add(&format!("{prefix}.settings"), wr, "Settings");
-    egui::Popup::menu(&wresp).show(|ui| {
-        ui.set_min_width(240.0);
-        monitor_view::wrench_items(app, ui, which);
-        let mv = monitor_view::view_mut(app, which);
-        ui.checkbox(&mut mv.safe_margins, "Safe Margins");
-        ui.checkbox(&mut mv.show_transport, "Show Transport Controls");
-        if which == Which::Program {
-            ui.separator();
-            ui.checkbox(&mut app.ui.show_scopes, "Lumetri Scopes");
-            ui.checkbox(&mut app.playback.looping, "Loop");
-            ui.separator();
-            let mut follows = app.session.state.multicam_audio_follows_video;
-            if ui.checkbox(&mut follows, "Multi-Camera Audio Follows Video").changed() {
-                let _ = app.session.execute("multicam.audioFollowsVideo", json!({"enabled": follows}));
-            }
-            ui.checkbox(&mut app.ui.multicam_record, "Multi-Camera Record");
-            let v = app.session.state.multicam_view.clone();
-            for (cmd, label, on) in [
-                ("multicam.selectionTopDown", "Multi-Camera Selection Top Down", v.top_down),
-                ("multicam.showPreviewMonitor", "Show Multi-Camera Preview Monitor", v.show_preview),
-                ("multicam.autoAdjustQuality", "Auto-Adjust Multi-Camera Playback Quality", v.auto_quality),
-                ("multicam.transmitView", "Transmit Multi-Camera View", v.transmit),
-            ] {
-                let mut b = on;
-                if ui.checkbox(&mut b, label).changed() {
-                    let _ = app.session.execute(cmd, json!({"enabled": b}));
-                }
-            }
-            ui.menu_button("Multi-Camera Layout", |ui| {
-                for (k, label) in [("auto", "Automatic"), ("2x2", "2 × 2"), ("3x3", "3 × 3"), ("4x4", "4 × 4")] {
-                    if ui.selectable_label(v.layout_name() == k, label).clicked() {
-                        let _ = app.session.execute("multicam.gridLayout", json!({"layout": k}));
-                    }
-                }
-            });
-            if ui.button("Edit Cameras…").clicked() {
-                let _ = crate::panels::multicam::route(app, "multicam.editCamerasDialog", &json!({}));
-                ui.close();
-            }
-        }
-    });
+    egui::Popup::menu(&wresp).style(crate::theme::menu_style).show(|ui| monitor_view::wrench_items(app, ui, which));
     // ---- mini timeline / scrub bar
     let bar = Rect::from_min_size(pos2(rect.min.x + 14.0, row1.max.y + 2.0), vec2(rect.width() - 28.0, 22.0));
     mini_timeline(app, ui, bar, which, origin, time, duration, rate, mark_in, mark_out);
@@ -340,6 +304,14 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, which: Which)
     // ---- transport buttons
     let row3 = Rect::from_min_size(pos2(rect.min.x, bar.max.y + 4.0), vec2(rect.width(), 32.0));
     transport(app, ui, row3, which);
+}
+
+/// The right-click menu of a monitor's picture. The graphics, mask and guide overlays lie over the
+/// picture and take its clicks, so `resp` never sees the right-click that `menus::context_menu`
+/// waits for: this is that menu, opened by a right-click anywhere in `area` instead.
+fn picture_menu(ui: &egui::Ui, resp: &egui::Response, area: Rect, add_contents: impl FnOnce(&mut egui::Ui)) {
+    let open = ui.rect_contains_pointer(area) && ui.input(|i| i.pointer.secondary_clicked());
+    egui::Popup::menu(resp).open_memory(open.then_some(egui::SetOpenCommand::Bool(true))).at_pointer_fixed().style(crate::theme::menu_style).show(add_contents);
 }
 
 /// A monitor texture from the CPU frame path: the exact frame, else the nearest cached one, with
@@ -428,7 +400,9 @@ fn mini_timeline(
     p.line_segment([pos2(x, hy + 8.0), pos2(x, bar.max.y)], Stroke::new(1.0, t.playhead));
     let resp = ui.interact(bar, egui::Id::new((which as u8, "scrub")), Sense::click_and_drag());
     app.auto.add(if which == Which::Program { "program.scrubBar" } else { "source.scrubBar" }, bar, "scrub bar");
-    if (resp.dragged() || resp.clicked())
+    crate::menus::context_menu(&resp, |ui| monitor_view::menu(app, ui, which, monitor_view::Menu::TimeRuler));
+    // (the right button is the menu's)
+    if (resp.dragged_by(egui::PointerButton::Primary) || resp.clicked())
         && let Some(pos) = resp.interact_pointer_pos()
     {
         let f = ((pos.x - bar.min.x) / bar.width()).clamp(0.0, 1.0) as f64;
@@ -529,7 +503,7 @@ fn transport(app: &mut FilmcraftApp, ui: &mut egui::Ui, row: Rect, which: Which)
     icons::paint(ui.painter(), r.shrink(5.0), Icon::Plus, if resp.hovered() { t.tab_text_active } else { t.text_dim });
 }
 
-fn source_nav(app: &mut FilmcraftApp, cmd: &str) {
+pub(crate) fn source_nav(app: &mut FilmcraftApp, cmd: &str) {
     let Some(item) = app.session.state.source_item else { return };
     let Some(v) = filmcraft_engine::clip_ops::source_view(&app.session, item) else { return };
     let rate = v.rate;

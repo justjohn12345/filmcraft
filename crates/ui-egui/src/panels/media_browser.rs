@@ -140,19 +140,19 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let label = mb::FILE_TYPES.iter().find(|f| f.0 == prefs.file_types).map(|f| f.1.to_string()).unwrap_or_else(|| format!(".{}", prefs.file_types));
     let fresp = crate::widgets::dropdown_text(ui, fr, &label, &t, egui::Id::new("mb-types")).on_hover_text("File Types Displayed");
     app.auto.add("mediaBrowser.fileTypes", fr, "File Types Displayed");
-    egui::Popup::menu(&fresp).show(|ui| {
+    egui::Popup::menu(&fresp).style(crate::theme::menu_style).show(|ui| {
         for (k, l) in mb::FILE_TYPES {
-            let r = ui.selectable_label(prefs.file_types == k, l);
+            let r = crate::menus::entry(ui, l, None, true, prefs.file_types == k);
             app.auto.add(&format!("mediaBrowser.fileTypes.{k}"), r.rect, l);
             if r.clicked() {
                 exec(app, &ctx, "mediaBrowser.settings", json!({"fileTypes": k}));
                 ui.close();
             }
         }
-        ui.separator();
-        ui.menu_button("File Extension", |ui| {
+        crate::menus::separator(ui);
+        ui.menu_button(crate::menus::row_label("File Extension"), |ui| {
             for e in mb::extensions() {
-                if ui.selectable_label(prefs.file_types == e, format!(".{e}")).clicked() {
+                if crate::menus::entry(ui, &format!(".{e}"), None, true, prefs.file_types == e).clicked() {
                     exec(app, &ctx, "mediaBrowser.settings", json!({"fileTypes": e}));
                     ui.close();
                 }
@@ -326,20 +326,20 @@ fn node(
     if resp.double_clicked() && expandable {
         toggle(app, path, open);
     }
-    resp.context_menu(|ui| {
+    crate::menus::context_menu(&resp, |ui| {
         let fav = app.session.prefs.media_browser.favorites.iter().any(|f| f == path);
         let label = if fav { "Remove from Favorites" } else { "Add to Favorites" };
-        let b = ui.button(label);
+        let b = crate::menus::entry(ui, label, None, true, false);
         app.auto.add("mediaBrowser.treeMenu.favorite", b.rect, label);
         if b.clicked() {
             exec(app, ctx, "mediaBrowser.favorite", json!({"path": path, "remove": fav}));
             ui.close();
         }
-        if ui.button("Import").clicked() {
+        if crate::menus::entry(ui, "Import", None, true, false).clicked() {
             exec(app, ctx, "mediaBrowser.import", json!({"paths": [path]}));
             ui.close();
         }
-        if section == "recent" && ui.button("Clear Recent Directories").clicked() {
+        if section == "recent" && crate::menus::entry(ui, "Clear Recent Directories", None, true, false).clicked() {
             exec(app, ctx, "mediaBrowser.clearRecent", json!({}));
             ui.close();
         }
@@ -397,16 +397,16 @@ fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respon
     if resp.drag_started() && !e.is_dir {
         start_file_drag(app, ui, e);
     }
-    resp.context_menu(|ui| {
+    crate::menus::context_menu(resp, |ui| {
         let paths: Vec<String> = if app.session.browser.selection.contains(&e.path) { app.session.browser.selection.clone() } else { vec![e.path.clone()] };
-        let b = ui.button("Import");
+        let b = crate::menus::entry(ui, "Import", None, true, false);
         app.auto.add("mediaBrowser.entryMenu.import", b.rect, "Import");
         if b.clicked() {
             exec(app, &ctx, "mediaBrowser.import", json!({"paths": paths, "imageSequence": false}));
             ui.close();
         }
         if !e.is_dir {
-            let b = ui.button("Open In Source Monitor");
+            let b = crate::menus::entry(ui, "Open In Source Monitor", None, true, false);
             app.auto.add("mediaBrowser.entryMenu.openInSource", b.rect, "Open In Source Monitor");
             if b.clicked() {
                 exec(app, &ctx, "mediaBrowser.openInSource", json!({"path": e.path}));
@@ -414,7 +414,7 @@ fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respon
             }
         }
         if e.numbered {
-            let b = ui.button("Import as Image Sequence");
+            let b = crate::menus::entry(ui, "Import as Image Sequence", None, true, false);
             app.auto.add("mediaBrowser.entryMenu.importSequence", b.rect, "Import as Image Sequence");
             if b.clicked() {
                 exec(app, &ctx, "mediaBrowser.import", json!({"paths": [e.path], "imageSequence": true}));
@@ -423,12 +423,12 @@ fn entry_interactions(app: &mut FilmcraftApp, ui: &egui::Ui, resp: &egui::Respon
         }
         if e.is_dir {
             let fav = app.session.prefs.media_browser.favorites.contains(&e.path);
-            if ui.button(if fav { "Remove from Favorites" } else { "Add to Favorites" }).clicked() {
+            if crate::menus::entry(ui, if fav { "Remove from Favorites" } else { "Add to Favorites" }, None, true, false).clicked() {
                 exec(app, &ctx, "mediaBrowser.favorite", json!({"path": e.path, "remove": fav}));
                 ui.close();
             }
         }
-        if ui.button("Reveal in Finder").clicked() {
+        if crate::menus::entry(ui, "Reveal in Finder", None, true, false).clicked() {
             let _ = crate::panels::menu_dialogs::open_path(app, &ctx, &e.path, true);
             ui.close();
         }
@@ -555,8 +555,8 @@ fn list(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, entries: &[Entry], c
         if cr.intersects(header) {
             let resp = ui.interact(cr.intersect(header), egui::Id::new(("mb-col", c)), Sense::click());
             app.auto.add(&format!("mediaBrowser.header.{c}"), cr.intersect(header), c);
-            resp.context_menu(|ui| {
-                if ui.button("Edit Columns…").clicked() {
+            crate::menus::context_menu(&resp, |ui| {
+                if crate::menus::entry(ui, "Edit Columns…", None, true, false).clicked() {
                     app.ui.media_browser.edit_columns = Some(columns.to_vec());
                     ui.close();
                 }

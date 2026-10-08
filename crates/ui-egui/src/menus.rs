@@ -658,6 +658,13 @@ pub fn tbd(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ui.add_enabled(false, egui::Button::new(format!("{GUTTER}{label} {}", crate::menu_layout::TBD)))
 }
 
+/// A right-click menu on `response`, with the look of every other menu (see
+/// [`crate::theme::menu_style`]). Draw its rows with [`entry`], [`tbd`] and [`separator`], and
+/// submenus with `ui.menu_button(row_label(..), ..)`.
+pub fn context_menu(response: &egui::Response, add_contents: impl FnOnce(&mut egui::Ui)) {
+    egui::Popup::context_menu(response).style(crate::theme::menu_style).show(add_contents);
+}
+
 /// A separator line between groups of rows: inset from the menu's sides, with room above and below.
 pub fn separator(ui: &mut egui::Ui) {
     ui.add(egui::Separator::default().spacing(9.0).shrink(6.0));

@@ -9,7 +9,7 @@
 //!
 //! Automation ids: `timeline.track.A1.keyframes` (the header button) with its menu entries
 //! (`timeline.track.A1.keyframes.<lane>`, `….clip`), `timeline.track.A1.lane` (the band) and
-//! `timeline.track.A1.lane.kf.<n>` (the diamonds).
+//! `timeline.track.A1.lane.kf.<n>` (the diamonds; `….kf.<n>.delete` in their context menu).
 
 use egui::{Align2, Color32, CursorIcon, Rect, Sense, Stroke, pos2, vec2};
 use filmcraft_project::mixer::{LANE_MUTE, LANE_PAN, LANE_VOLUME, lane_info, parse_fx_lane, send_lane};
@@ -99,17 +99,17 @@ pub fn header_button(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, 
             .on_hover_text("Show Keyframes");
     app.auto.add(&format!("timeline.track.{label}.keyframes"), rect, "Show Keyframes");
     let opts = lane_options(tr);
-    egui::Popup::menu(&resp).show(|ui| {
+    egui::Popup::menu(&resp).style(crate::theme::menu_style).show(|ui| {
         ui.set_min_width(170.0);
-        let c = ui.selectable_label(showing.is_none(), "Clip Keyframes");
+        let c = crate::menus::entry(ui, "Clip Keyframes", None, true, showing.is_none());
         app.auto.add(&format!("timeline.track.{label}.keyframes.clip"), c.rect, "Clip Keyframes");
         if c.clicked() {
             app.ui.timeline.track_lanes.remove(&r.track.0);
         }
-        ui.separator();
-        ui.label(egui::RichText::new("Track Keyframes").small());
+        crate::menus::separator(ui);
+        ui.label(egui::RichText::new(crate::menus::row_label("Track Keyframes")).small());
         for (k, l) in &opts {
-            let e = ui.selectable_label(showing.as_deref() == Some(k.as_str()), l);
+            let e = crate::menus::entry(ui, l, None, true, showing.as_deref() == Some(k.as_str()));
             app.auto.add(&format!("timeline.track.{label}.keyframes.{k}"), e.rect, l);
             if e.clicked() {
                 app.ui.timeline.track_lanes.insert(r.track.0, k.clone());
@@ -221,8 +221,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
             }
             let time = k.time;
             let key2 = key.clone();
-            resp.context_menu(|ui| {
-                if ui.button("Delete").clicked() {
+            crate::menus::context_menu(&resp, |ui| {
+                let d = crate::menus::entry(ui, "Delete", None, true, false);
+                app.auto.add(&format!("timeline.track.{label}.lane.kf.{i}.delete"), d.rect, "Delete");
+                if d.clicked() {
                     acts.push(("mixer.deleteKeyframe", json!({"strip": r.track.0, "lane": key2, "time": time.0})));
                     ui.close();
                 }

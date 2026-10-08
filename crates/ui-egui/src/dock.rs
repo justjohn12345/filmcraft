@@ -683,33 +683,37 @@ pub fn draw_group_chrome(
         let list_open = ui.ctx().data(|d| d.get_temp::<bool>(list_id)).unwrap_or(false);
         if let Some(r) = more.filter(|_| list_open) {
             let mut picked = None;
-            let area = egui::Area::new(list_id.with("area")).order(egui::Order::Foreground).pivot(Align2::RIGHT_TOP).fixed_pos(r.right_bottom()).show(
-                ui.ctx(),
-                |ui| {
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.set_min_width(160.0);
-                        // many open sequences: the list scrolls instead of leaving the window
-                        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                            for tab in &tabs {
-                                let label = if tab.active { format!("✓ {}", tab.title) } else { tab.title.clone() };
-                                let resp = ui.button(label);
-                                match tab.seq {
-                                    Some(id) => reg.add(&format!("timeline.tabs.list.{id}"), resp.rect, &tab.title),
-                                    None => reg.add(&format!("panel.tabs.list.{}", tab.panel.id()), resp.rect, &tab.title),
-                                }
-                                if resp.clicked() {
-                                    picked = Some(tab);
-                                }
+            // a menu like those of the menu bar (same look), its right edge under the »; opening
+            // and closing are done here
+            let layer = egui::LayerId::new(egui::Order::Foreground, list_id.with("layer"));
+            let popup = egui::Popup::new(list_id.with("popup"), ui.ctx().clone(), egui::PopupAnchor::Position(r.right_bottom()), layer)
+                .kind(egui::PopupKind::Menu)
+                .align(egui::RectAlign::BOTTOM_END)
+                .layout(egui::Layout::top_down_justified(egui::Align::Min))
+                .style(crate::theme::menu_style)
+                .close_behavior(egui::PopupCloseBehavior::IgnoreClicks)
+                .open(true)
+                .show(|ui| {
+                    ui.set_min_width(160.0);
+                    // many open sequences: the list scrolls instead of leaving the window
+                    egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                        for tab in &tabs {
+                            let resp = crate::menus::entry(ui, &tab.title, None, true, tab.active);
+                            match tab.seq {
+                                Some(id) => reg.add(&format!("timeline.tabs.list.{id}"), resp.rect, &tab.title),
+                                None => reg.add(&format!("panel.tabs.list.{}", tab.panel.id()), resp.rect, &tab.title),
                             }
-                        });
+                            if resp.clicked() {
+                                picked = Some(tab);
+                            }
+                        }
                     });
-                },
-            );
+                });
             if let Some(tab) = picked {
                 activate(tab, &mut actions);
                 actions.push(DockAction::Focus(tab.panel));
             }
-            if picked.is_some() || (!list_opened && area.response.clicked_elsewhere()) {
+            if picked.is_some() || (!list_opened && popup.is_some_and(|r| r.response.clicked_elsewhere())) {
                 ui.ctx().data_mut(|d| d.remove::<bool>(list_id));
             }
         } else if list_open {

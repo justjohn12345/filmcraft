@@ -872,8 +872,8 @@ pub fn search_bin_rows(
                 app.ui.expanded_bins.push(sb.id.0);
             }
         }
-        resp.context_menu(|ui| {
-            if ui.button("Delete Search Bin").clicked() {
+        crate::menus::context_menu(&resp, |ui| {
+            if crate::menus::entry(ui, "Delete Search Bin", None, true, false).clicked() {
                 actions.push(("project.deleteSearchBin".into(), json!({"bin": sb.id.0})));
                 ui.close();
             }

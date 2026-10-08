@@ -37,9 +37,9 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             app.ui.tool = current;
         }
         if group.len() > 1 {
-            egui::Popup::context_menu(&resp).show(|ui| {
+            crate::menus::context_menu(&resp, |ui| {
                 for tl in &group {
-                    if ui.selectable_label(app.ui.tool == *tl, format!("{}   {}", tl.label(), tl.shortcut())).clicked() {
+                    if crate::menus::entry(ui, tl.label(), Some(tl.shortcut()), true, app.ui.tool == *tl).clicked() {
                         app.ui.tool = *tl;
                     }
                 }

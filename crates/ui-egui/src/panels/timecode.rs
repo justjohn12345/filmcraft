@@ -122,12 +122,12 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         }
         let resp = ui.interact(r, egui::Id::new(("timecode-row", i)), Sense::click());
         elems.push((format!("timecode.row.{i}"), vr, value.clone()));
-        egui::Popup::context_menu(&resp).show(|ui| {
+        crate::menus::context_menu(&resp, |ui| {
             ui.set_min_width(200.0);
             let mut nr = *row;
             let mut picks: Vec<(String, Rect, String, bool)> = Vec::new();
             let mut pick = |ui: &mut egui::Ui, id: String, label: &str, on: bool| {
-                let r = ui.selectable_label(on, label);
+                let r = crate::menus::entry(ui, label, None, true, on);
                 picks.push((id, r.rect, label.to_string(), r.clicked()));
                 r.clicked()
             };
@@ -136,13 +136,13 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     nr.mode = m;
                 }
             }
-            ui.separator();
+            crate::menus::separator(ui);
             for src in TcSource::ALL {
                 if pick(ui, format!("timecode.row.{i}.source.{}", serde_name(&src)), src.label(), row.source == src) {
                     nr.source = src;
                 }
             }
-            ui.separator();
+            crate::menus::separator(ui);
             for (n, d) in TimeDisplay::ALL.into_iter().enumerate() {
                 if pick(ui, format!("timecode.row.{i}.display.{n}"), d.label(), row.display == d) {
                     nr.display = d;
@@ -150,7 +150,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
             let mut remove = false;
             if rows.len() > 1 {
-                ui.separator();
+                crate::menus::separator(ui);
                 remove = pick(ui, format!("timecode.row.{i}.remove"), "Remove Row", false);
             }
             for (id, r, l, _) in &picks {

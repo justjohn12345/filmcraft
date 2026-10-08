@@ -147,25 +147,31 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let open = ui.ctx().data(|d| d.get_temp::<bool>(popup_id).unwrap_or(false));
     if open {
         let anchor = pos2(wr.min.x, rect.max.y + 4.0);
-        let area = egui::Area::new(popup_id.with("area")).order(egui::Order::Foreground).fixed_pos(anchor).show(ui.ctx(), |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
+        // a menu like those of the menu bar (same look); opening and closing are done here
+        let layer = egui::LayerId::new(egui::Order::Foreground, popup_id.with("layer"));
+        let popup = egui::Popup::new(popup_id.with("popup"), ui.ctx().clone(), egui::PopupAnchor::Position(anchor), layer)
+            .kind(egui::PopupKind::Menu)
+            .layout(egui::Layout::top_down_justified(egui::Align::Min))
+            .style(crate::theme::menu_style)
+            .close_behavior(egui::PopupCloseBehavior::IgnoreClicks)
+            .open(true)
+            .show(|ui| {
                 ui.set_min_width(220.0);
                 for w in crate::dock::names(&app.workspaces) {
                     let sel = app.ui.workspace == w;
-                    if ui.selectable_label(sel, &w).clicked() {
+                    if crate::menus::entry(ui, &w, None, true, sel).clicked() {
                         app.set_workspace(&w);
                         ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
                     }
                 }
-                ui.separator();
-                if ui.button("Reset to Saved Layout").clicked() {
+                crate::menus::separator(ui);
+                if crate::menus::entry(ui, "Reset to Saved Layout", None, true, false).clicked() {
                     let n = app.ui.workspace.clone();
                     app.set_workspace(&n);
                     ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
                 }
             });
-        });
-        if area.response.clicked_elsewhere() && !(ws_resp.clicked() || wresp.clicked()) {
+        if popup.is_some_and(|r| r.response.clicked_elsewhere()) && !(ws_resp.clicked() || wresp.clicked()) {
             ui.ctx().data_mut(|d| d.insert_temp(popup_id, false));
         }
     }

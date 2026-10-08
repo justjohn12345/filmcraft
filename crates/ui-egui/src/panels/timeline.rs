@@ -48,6 +48,9 @@ pub struct TlState {
     /// display gain: scanning the whole source per clip per frame cost more than drawing.
     peak_max: HashMap<ItemId, (usize, f32)>,
     zoom_anchor: Option<(f64, f32)>,
+    /// What the last right-click in the tracks or on the ruler was on: it decides which context
+    /// menu is open there.
+    menu_at: Option<Hit>,
 }
 
 impl TlState {
@@ -918,6 +921,100 @@ fn patch_button(ui: &mut egui::Ui, r: Rect, clip: Rect, label: &str, on: bool, s
     resp
 }
 
+/// The rows of a menu table: groups (separated by rules) of (label, id); a row without an id is an
+/// item Premiere has and FilmCraft does not yet, greyed out in its place. `state` gives a row's
+/// (enabled, checked). Rows are registered for automation as `<prefix>.<id>`. Returns the id of
+/// the row that was clicked.
+fn menu_rows(
+    app: &mut FilmcraftApp,
+    ui: &mut egui::Ui,
+    prefix: &str,
+    groups: &[&[(&'static str, &'static str)]],
+    state: impl Fn(&FilmcraftApp, &str) -> (bool, bool),
+) -> Option<&'static str> {
+    let mut clicked = None;
+    for (i, group) in groups.iter().enumerate() {
+        if i > 0 {
+            crate::menus::separator(ui);
+        }
+        for &(label, id) in *group {
+            if id.is_empty() {
+                crate::menus::tbd(ui, label);
+                continue;
+            }
+            let (enabled, checked) = state(app, id);
+            let r = crate::menus::entry(ui, label, None, enabled, checked);
+            app.auto.add(&format!("{prefix}.{id}"), r.rect, label);
+            if r.clicked() {
+                clicked = Some(id);
+            }
+        }
+    }
+    clicked
+}
+
+/// A track header's context menu, as Premiere's: (label, command id). `rename` and `addTrack` act
+/// on the header's own track.
+const TRACK_MENU: &[&[(&str, &str)]] = &[
+    &[("Rename", "rename")],
+    &[("Add Track", "addTrack"), ("Add Audio Submix Track", "mixer.addSubmix"), ("Delete Track", "sequence.deleteTrack")],
+    &[("Add Tracks…", "sequence.addTracks"), ("Delete Tracks…", "sequence.deleteTracks")],
+    &[("Add New Caption Track…", "captions.newTrack")],
+    &[("Hide Caption Tracks", "captions.hideAll")],
+    &[
+        ("Toggle Track Output for All Targeted Video Tracks", "timeline.toggleOutputTargetedVideo"),
+        ("Toggle Mute for All Targeted Audio Tracks", "timeline.toggleMuteTargetedAudio"),
+        ("Toggle Solo for All Targeted Audio Tracks", "timeline.toggleSoloTargetedAudio"),
+    ],
+    &[("Track Output Channel Assignments…", "")],
+    &[("Voice-Over Record Settings…", "voiceover.settingsDialog")],
+    &[("Customize…", "")],
+];
+
+/// The track whose name is being edited in its header: (track, the name as typed so far, whether
+/// the field has still to take the keyboard focus).
+type TrackRename = (u64, String, bool);
+
+fn rename_id() -> egui::Id {
+    egui::Id::new("tl-track-rename")
+}
+
+/// The context menu of the header of the track in row `r`. `name` is the track's name when the
+/// header shows it: only then can it be renamed there.
+fn track_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: &Row, name: Option<&str>) {
+    ui.set_min_width(220.0);
+    let audio = r.kind == TrackKind::Audio;
+    let clicked = menu_rows(app, ui, "timeline.trackMenu", TRACK_MENU, |app, id| {
+        let enabled = match id {
+            "rename" => name.is_some(),
+            "addTrack" => app.session.is_enabled("sequence.addTracks"),
+            // as in Premiere, not on a video track's header
+            "mixer.addSubmix" => audio && app.session.is_enabled(id),
+            "voiceover.settingsDialog" => audio,
+            _ => app.session.is_enabled(id),
+        };
+        (enabled, false)
+    });
+    let Some(id) = clicked else { return };
+    let ctx = ui.ctx().clone();
+    let done = match id {
+        "rename" => {
+            ui.data_mut(|d| d.insert_temp::<TrackRename>(rename_id(), (r.track.0, name.unwrap_or_default().to_string(), true)));
+            Ok(Value::Null)
+        }
+        // one more track of the header's kind, next to its track
+        "addTrack" if audio => crate::menus::invoke(app, &ctx, "sequence.addTracks", json!({"video": 0, "audio": 1, "audioAfter": r.index + 1})),
+        "addTrack" => crate::menus::invoke(app, &ctx, "sequence.addTracks", json!({"video": 1, "videoAfter": r.index + 1})),
+        "sequence.deleteTrack" => crate::menus::invoke(app, &ctx, id, json!({"track": r.track.0})),
+        // the rest as the same item of the menu bar does
+        _ => crate::menus::invoke(app, &ctx, id, json!({})),
+    };
+    if let Err(e) = done {
+        app.ui.status = e;
+    }
+    ui.close();
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows: &[Row], rect: Rect, vclip: Rect, aclip: Rect, t: &Tokens) {
     let hw = app.ui.timeline.header_w;
@@ -936,14 +1033,20 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
         p.rect_filled(hrect, 0.0, t.tl_header_bg);
         p.line_segment([pos2(hrect.min.x, hrect.max.y - 0.5), pos2(hrect.max.x, hrect.max.y - 0.5)], Stroke::new(1.0, t.separator));
         let label = format!("{}{}", if r.kind == TrackKind::Video { "V" } else { "A" }, r.index + 1);
+        // The header's context menu opens on its background and on its buttons (the microphone and
+        // the keyframe button have their own): the responses it is attached to.
+        let mut menu_on = vec![ui.interact(visible, egui::Id::new(("hdr-bg", r.track.0)), Sense::click())];
+        app.auto.add(&format!("timeline.track.{label}.header"), visible, &tr.name);
         let btn_rect = |x0: f32| Rect::from_min_max(pos2(hrect.min.x + x0, hrect.min.y + 1.0), pos2(hrect.min.x + x0 + 24.0, hrect.max.y - 2.0));
         // 1. source patch (absent when unpatched)
         let patched = if r.kind == TrackKind::Video { tg.video_dest == Some(r.track) } else { tg.audio_dest == Some(r.track) };
         let pr = btn_rect(13.0);
         app.auto.add(&format!("timeline.track.{label}.sourcePatch"), pr, "Source patch");
-        if patch_button(ui, pr, visible, &label, patched, false, egui::Id::new(("patch", r.track.0)), t).clicked() {
+        let presp = patch_button(ui, pr, visible, &label, patched, false, egui::Id::new(("patch", r.track.0)), t);
+        if presp.clicked() {
             actions.push(("timeline.setTargeting".into(), json!({"track": r.track.0, "sourcePatch": !patched})));
         }
+        menu_on.push(presp);
         // 2. track lock
         let small = |x: f32, y: f32| Rect::from_center_size(pos2(hrect.min.x + x, y), vec2(18.0, 18.0));
         let upper_y = hrect.min.y + (16.0f32).min(hrect.height() / 2.0);
@@ -961,6 +1064,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
         if lresp.clicked() {
             actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "locked": !tr.locked})));
         }
+        menu_on.push(lresp);
         if tr.locked {
             // diagonal hatch over locked lanes is drawn by the lane painter; here a subtle tint
             p.rect_filled(Rect::from_min_max(pos2(hrect.max.x - 4.0, hrect.min.y), hrect.max), 0.0, Color32::from_rgb(0x4b, 0x4b, 0x4b));
@@ -969,9 +1073,11 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
         let targeted = tg.targeted.contains(&r.track);
         let trr = btn_rect(61.0);
         app.auto.add(&format!("timeline.track.{label}.target"), trr, "Toggle track targeting");
-        if patch_button(ui, trr, visible, &label, targeted, true, egui::Id::new(("target", r.track.0)), t).clicked() {
+        let tresp = patch_button(ui, trr, visible, &label, targeted, true, egui::Id::new(("target", r.track.0)), t);
+        if tresp.clicked() {
             actions.push(("timeline.setTargeting".into(), json!({"track": r.track.0, "targeted": !targeted})));
         }
+        menu_on.push(tresp);
         // 4. upper line icons
         let mut x = 102.0;
         let sr = small(x, upper_y);
@@ -981,6 +1087,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
         if sresp.clicked() {
             actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "syncLock": !tr.sync_lock})));
         }
+        menu_on.push(sresp);
         x += 24.0;
         if r.kind == TrackKind::Video {
             let er = small(x, upper_y);
@@ -997,6 +1104,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
             if eresp.clicked() {
                 actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "enabled": !tr.enabled})));
             }
+            menu_on.push(eresp);
         } else {
             let mr = Rect::from_center_size(pos2(hrect.min.x + x, upper_y), vec2(14.0, 14.0));
             let mresp = crate::widgets::letter_toggle(
@@ -1012,6 +1120,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
             if mresp.clicked() {
                 actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "muted": !tr.muted})));
             }
+            menu_on.push(mresp);
             let s2 = Rect::from_center_size(pos2(hrect.min.x + x + 20.0, upper_y), vec2(14.0, 14.0));
             let so = crate::widgets::letter_toggle(
                 ui,
@@ -1026,6 +1135,7 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
             if so.clicked() {
                 actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "solo": !tr.solo})));
             }
+            menu_on.push(so);
             let vr = small(x + 42.0, upper_y);
             if let Some(a) = super::voiceover::header_button(app, ui, r.track, vr, visible, &label, t) {
                 vo_action = Some(a);
@@ -1033,8 +1143,12 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
             let kr = small(x + 64.0, upper_y);
             super::timeline_automation::header_button(app, ui, seq, r, kr, visible, &label, t);
         }
-        // 5. name on the lower line (or inline when short)
-        if hrect.height() >= 40.0 {
+        // 5. name on the lower line (or inline when short); an edit field while the track is
+        // being renamed (Rename in the header's menu)
+        let name_rect = Rect::from_min_max(pos2(hrect.min.x + 90.0, hrect.min.y + 24.0), pos2(hrect.max.x - 6.0, (hrect.min.y + 44.0).min(hrect.max.y - 1.0)));
+        let name_shown = hrect.height() >= 40.0 && visible.contains_rect(name_rect);
+        let renaming = ui.data(|d| d.get_temp::<TrackRename>(rename_id())).filter(|n| n.0 == r.track.0);
+        if hrect.height() >= 40.0 && renaming.is_none() {
             p.text(pos2(hrect.min.x + 94.0, hrect.min.y + 34.0), Align2::LEFT_CENTER, &tr.name, Tokens::ui(11.0), t.text_dim);
         }
         // resize track height by dragging the header's bottom edge
@@ -1059,6 +1173,32 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
             let h = if r.kind == TrackKind::Video { &mut app.ui.timeline.video_track_h } else { &mut app.ui.timeline.audio_track_h };
             *h = if *h < 50.0 { 64.0 } else { 30.0 };
         }
+        menu_on.push(resp);
+        // the name being typed: Enter or a click elsewhere keeps it, Esc the old name
+        if let Some((_, mut name, focus)) = renaming {
+            if !name_shown {
+                ui.data_mut(|d| d.remove::<TrackRename>(rename_id()));
+            } else {
+                let field = egui::TextEdit::singleline(&mut name).id(egui::Id::new(("tl-track-name", r.track.0))).font(Tokens::ui(11.0)).margin(vec2(4.0, 1.0));
+                let edit = ui.put(name_rect, field);
+                app.auto.add(&format!("timeline.track.{label}.name"), name_rect, "Track name");
+                if focus {
+                    edit.request_focus();
+                }
+                if focus || edit.has_focus() {
+                    ui.data_mut(|d| d.insert_temp(rename_id(), (r.track.0, name, false)));
+                } else {
+                    let name = name.trim();
+                    if !ui.input(|i| i.key_pressed(egui::Key::Escape)) && !name.is_empty() && name != tr.name {
+                        actions.push(("timeline.setTrack".into(), json!({"track": r.track.0, "name": name})));
+                    }
+                    ui.data_mut(|d| d.remove::<TrackRename>(rename_id()));
+                }
+            }
+        }
+        for m in &menu_on {
+            crate::menus::context_menu(m, |ui| track_menu(app, ui, r, name_shown.then_some(tr.name.as_str())));
+        }
     }
     // column separator
     ui.painter().line_segment([pos2(rect.min.x + hw - 0.5, vclip.min.y), pos2(rect.min.x + hw - 0.5, aclip.max.y + MASTER_H)], Stroke::new(1.0, t.separator));
@@ -1072,6 +1212,32 @@ fn draw_headers(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, rows:
     }
 }
 
+/// The Timeline Display Settings menu (the wrench), as Premiere's: (label, key of the row).
+const DISPLAY_SETTINGS: &[&[(&str, &str)]] = &[
+    &[("Show Source Clip Name and Label", "")],
+    &[("Show Video Thumbnails", "showVideoThumbnails"), ("Show Video Keyframes", ""), ("Show Video Names", ""), ("Show Video Fade Handles", "")],
+    &[
+        ("Show Audio Clip Header on Small Tracks", ""),
+        ("Show Audio Waveform", "showAudioWaveform"),
+        ("Show Audio Keyframes", ""),
+        ("Show Audio Names", ""),
+        ("Show Audio Fade Handles", ""),
+        ("Show Audio Type Badges", ""),
+        ("Show Audio Channel Labels", ""),
+    ],
+    &[
+        ("Show Clip Markers", ""),
+        ("Show Duplicate Frame Markers", ""),
+        ("Show Through Edits", "showThroughEdits"),
+        ("Show FX Badges", ""),
+        ("Show Proxy Badges", ""),
+        ("Show Sequence Label Color", ""),
+    ],
+    &[("Composite Preview During Trim", "")],
+    &[("Minimize All Tracks", "minimizeAllTracks"), ("Expand All Tracks", "expandAllTracks"), ("Save Preset…", ""), ("Manage Presets…", "")],
+    &[("Customize Video Header…", ""), ("Customize Audio Header…", "")],
+];
+
 fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequence, layout: &Layout, t: &Tokens, seq_id: ItemId) {
     let p = ui.painter().clone();
     let rate = seq.settings.frame_rate;
@@ -1084,6 +1250,23 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
     let tc_rect = Rect::from_min_size(pos2(rect.min.x + 14.0, rect.min.y + 4.0), vec2(hw - 20.0, 20.0));
     p.text(pos2(tc_rect.min.x, tc_rect.center().y), Align2::LEFT_CENTER, &tc, Tokens::timecode(), t.timecode);
     app.auto.add("timeline.timecode", tc_rect, &tc);
+    // its context menu: the display formats Premiere offers; the Timeline shows timecode
+    let tc_resp = ui.interact(tc_rect, egui::Id::new("tl-timecode"), Sense::click());
+    crate::menus::context_menu(&tc_resp, |ui| {
+        let label = format!("{rate} {}Timecode", if seq.settings.drop_frame && rate.supports_drop_frame() { "Drop-Frame " } else { "" });
+        let r = crate::menus::entry(ui, &label, None, true, true);
+        app.auto.add("timeline.timecodeMenu.timecode", r.rect, &label);
+        if r.clicked() {
+            ui.close();
+        }
+        // (Premiere offers this one on a 24 fps timebase)
+        if rate.timecode_base() == 24 {
+            crate::menus::tbd(ui, "29.97 fps Non-Drop-Frame Timecode");
+        }
+        for label in ["Feet + Frames 16 mm", "Feet + Frames 35 mm", "Frames"] {
+            crate::menus::tbd(ui, label);
+        }
+    });
     // toolbar: 30 × 30 buttons, "on" = #4b4b4b fill
     let mut x = rect.min.x + 12.0;
     let y = rect.min.y + 26.0;
@@ -1115,24 +1298,26 @@ fn draw_top(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect, seq: &Sequenc
             };
         }
         if key == "settings" {
-            egui::Popup::menu(&resp).show(|ui| {
-                ui.checkbox(&mut app.ui.timeline.show_thumbnails, "Show Video Thumbnails");
-                ui.checkbox(&mut app.ui.timeline.show_waveforms, "Show Audio Waveform");
-                ui.separator();
-                let mut te = app.session.state.show_through_edits;
-                let c = ui.checkbox(&mut te, "Show Through Edits");
-                app.auto.add("timeline.settings.showThroughEdits", c.rect, "Show Through Edits");
-                if c.changed() {
-                    let _ = app.session.execute("sequence.showThroughEdits", json!({"on": te}));
-                }
-                ui.separator();
-                if ui.button("Expand All Tracks").clicked() {
-                    app.ui.timeline.video_track_h = 64.0;
-                    app.ui.timeline.audio_track_h = 64.0;
-                }
-                if ui.button("Minimize All Tracks").clicked() {
-                    app.ui.timeline.video_track_h = 26.0;
-                    app.ui.timeline.audio_track_h = 26.0;
+            egui::Popup::menu(&resp).style(crate::theme::menu_style).show(|ui| {
+                let clicked = menu_rows(app, ui, "timeline.settings", DISPLAY_SETTINGS, |app, id| {
+                    let on = match id {
+                        "showVideoThumbnails" => app.ui.timeline.show_thumbnails,
+                        "showAudioWaveform" => app.ui.timeline.show_waveforms,
+                        "showThroughEdits" => app.session.state.show_through_edits,
+                        _ => false,
+                    };
+                    (true, on)
+                });
+                let v = &mut app.ui.timeline;
+                match clicked {
+                    Some("showVideoThumbnails") => v.show_thumbnails = !v.show_thumbnails,
+                    Some("showAudioWaveform") => v.show_waveforms = !v.show_waveforms,
+                    Some("showThroughEdits") => {
+                        let _ = app.session.execute("sequence.showThroughEdits", json!({"on": !app.session.state.show_through_edits}));
+                    }
+                    Some("minimizeAllTracks") => (v.video_track_h, v.audio_track_h) = (26.0, 26.0),
+                    Some("expandAllTracks") => (v.video_track_h, v.audio_track_h) = (64.0, 64.0),
+                    _ => {}
                 }
             });
         }
@@ -1570,43 +1755,236 @@ fn shift_track(seq: &Sequence, tid: TrackId, delta: i32) -> Option<TrackId> {
     Some(tid)
 }
 
-/// The clip context menu: groups (separated by rules) of (label, command id). Entries marked `…`
-/// open their dialog through `menus::invoke`, like the same item in the Clip menu.
-const CLIP_MENU: &[&[(&str, &str)]] = &[
+/// One line of the clip context menu.
+enum ClipRow {
+    /// (label, command id). It runs through `menus::invoke`, like the same item of the menu bar
+    /// (those marked `…` open their dialog).
+    Cmd(&'static str, &'static str),
+    /// An item Premiere has and FilmCraft does not yet.
+    Tbd(&'static str),
+    /// A submenu of commands: (label, automation id, rows).
+    Sub(&'static str, &'static str, &'static [(&'static str, &'static str)]),
+    /// The Multi-Camera submenu (see [`multicam_menu`]).
+    MultiCamera,
+    /// The Label submenu: Select Label Group and the label colours.
+    Labels,
+    /// The Show Clip Keyframes submenu: the one part that differs between a video and an audio clip.
+    Keyframes,
+}
+use ClipRow::{Cmd, Keyframes, Labels, MultiCamera, Sub, Tbd};
+
+/// The clip context menu, as Premiere's: groups separated by rules. The last group is FilmCraft's
+/// own.
+const CLIP_MENU: &[&[ClipRow]] = &[
     &[
-        ("Cut", "edit.cut"),
-        ("Copy", "edit.copy"),
-        ("Paste Attributes…", "edit.pasteAttributes"),
-        ("Remove Attributes…", "edit.removeAttributes"),
-        ("Clear", "edit.clear"),
-        ("Ripple Delete", "edit.rippleDelete"),
+        Cmd("Cut", "edit.cut"),
+        Cmd("Copy", "edit.copy"),
+        Cmd("Paste Attributes…", "edit.pasteAttributes"),
+        Cmd("Remove Attributes…", "edit.removeAttributes"),
+        Cmd("Clear", "edit.clear"),
+        Cmd("Ripple Delete", "edit.rippleDelete"),
     ],
-    &[("Edit Original", "edit.editOriginal"), ("Replace With Clip From Source Monitor", "clip.replaceFromSource")],
     &[
-        ("Enable", "clip.enable"),
-        ("Link", "clip.link"),
-        ("Group", "clip.group"),
-        ("Ungroup", "clip.ungroup"),
-        ("Synchronize…", "clip.synchronize"),
-        ("Merge Clips…", "clip.mergeClips"),
-        ("Nest…", "clip.nest"),
-        ("Make Subsequence", "sequence.makeSubsequence"),
-        ("Reveal Nested Sequence", "sequence.revealNested"),
-        ("Multi-Camera", "clip.multicam"),
+        Cmd("Edit Original", "edit.editOriginal"),
+        Sub(
+            "Replace With Clip",
+            "clip.replaceWithClip",
+            &[
+                ("From Source Monitor", "clip.replaceFromSource"),
+                ("From Source Monitor, Match Frame", "clip.replaceFromSourceMatchFrame"),
+                ("From Bin", "clip.replaceFromBin"),
+            ],
+        ),
+        Tbd("Render and Replace…"),
+        Tbd("Restore Unrendered"),
+        Cmd("Restore Captions from Source Clip", "clip.restoreCaptionsFromSource"),
     ],
-    &[("Label", "edit.label")],
-    &[("Speed/Duration…", "clip.speedDuration")],
     &[
-        ("Frame Hold Options…", "clip.frameHoldOptions"),
-        ("Add Frame Hold", "clip.frameHold"),
-        ("Insert Frame Hold Segment", "clip.insertFrameHoldSegment"),
-        ("Field Options…", "clip.fieldOptions"),
-        ("Scale to Frame Size", "clip.scaleToFrameSize"),
-        ("Fit to frame", "clip.fitToFrame"),
-        ("Fill frame", "clip.fillFrame"),
+        Cmd("Enable", "clip.enable"),
+        Cmd("Link", "clip.link"),
+        Cmd("Group", "clip.group"),
+        Cmd("Ungroup", "clip.ungroup"),
+        Cmd("Synchronize", "clip.synchronize"),
+        Cmd("Merge Clips…", "clip.mergeClips"),
+        Cmd("Nest…", "clip.nest"),
+        Cmd("Make Subsequence", "sequence.makeSubsequence"),
+        MultiCamera,
     ],
-    &[("Reveal in Project", "clip.revealInProject"), ("Join Through Edits", "sequence.joinThroughEdits")],
+    &[Labels],
+    &[Cmd("Speed/Duration…", "clip.speedDuration"), Cmd("Scene Edit Detection…", "clip.sceneEditDetection")],
+    &[Tbd("Ignore Transcript")],
+    &[Cmd("Audio Gain…", "clip.audioGain"), Cmd("Audio Channels…", "clip.audioChannels"), Tbd("Auto-Tag Audio Types"), Tbd("Enable Enhance Speech")],
+    &[
+        Cmd("Frame Hold Options…", "clip.frameHoldOptions"),
+        Cmd("Add Frame Hold", "clip.frameHold"),
+        Cmd("Insert Frame Hold Segment", "clip.insertFrameHoldSegment"),
+        Cmd("Field Options…", "clip.fieldOptions"),
+        Sub(
+            "Time Interpolation",
+            "clip.timeInterpolation",
+            &[
+                ("Frame Sampling", "clip.timeInterpolation.frameSampling"),
+                ("Frame Blending", "clip.timeInterpolation.frameBlending"),
+                ("Optical Flow", "clip.timeInterpolation.opticalFlow"),
+            ],
+        ),
+        Cmd("Scale to Frame Size", "clip.scaleToFrameSize"),
+        Cmd("Fit to frame", "clip.fitToFrame"),
+        Cmd("Fill frame", "clip.fillFrame"),
+        Tbd("Adjustment Layer"),
+    ],
+    // (Make Offline… and Rename… have commands, but for the Project panel's selection and with
+    // the name given: nothing yet asks for a timeline clip's)
+    &[Cmd("Link Media…", "media.linkMedia"), Tbd("Make Offline…")],
+    &[Tbd("Rename…"), Cmd("Make Subclip…", "clip.makeSubclip"), Cmd("Reveal in Project", "clip.revealInProject"), Tbd("Reveal in Finder…")],
+    &[Keyframes],
+    &[Cmd("Reveal Nested Sequence", "sequence.revealNested"), Cmd("Join Through Edits", "sequence.joinThroughEdits")],
 ];
+
+/// Premiere's Show Clip Keyframes submenu of a video clip and of an audio clip: (effect, its
+/// properties). The Timeline does not show clip keyframes by property yet.
+const VIDEO_KEYFRAMES: &[(&str, &[&str])] = &[
+    (
+        "Motion",
+        &["Position", "Scale", "Uniform Scale", "Rotation", "Anchor Point", "Anti-flicker Filter", "Crop Left", "Crop Top", "Crop Right", "Crop Bottom"],
+    ),
+    ("Opacity", &["Opacity"]),
+    ("Time Remapping", &["Speed"]),
+];
+const AUDIO_KEYFRAMES: &[(&str, &[&str])] = &[("Volume", &["Mute", "Level"]), ("Channel Volume", &["Bypass", "Left", "Right"]), ("Panner", &["Balance"])];
+
+/// One command row of the clip menu (`timeline.clipMenu.<command id>`); true when it was clicked.
+fn clip_row(app: &mut FilmcraftApp, ui: &mut egui::Ui, label: &str, cmd: &str, enabled: bool, checked: bool) -> bool {
+    let r = crate::menus::entry(ui, label, None, enabled && app.session.is_enabled(cmd), checked);
+    app.auto.add(&format!("timeline.clipMenu.{cmd}"), r.rect, label);
+    r.clicked()
+}
+
+/// The context menu of a clip on a track of `kind`. It acts on the selection (the clip that was
+/// right-clicked is in it). `opened`: the menu opens this frame.
+fn clip_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, ctx: &egui::Context, seq: &Sequence, kind: TrackKind, opened: bool) {
+    ui.set_min_width(220.0);
+    // Premiere's clip menu is long: where the window is not as tall, it scrolls rather than run
+    // off the bottom of it (from the top each time it opens)
+    let max_height = (ui.ctx().content_rect().height() - 24.0).max(120.0);
+    let mut rows = egui::ScrollArea::vertical().max_height(max_height).min_scrolled_height(max_height);
+    if opened {
+        rows = rows.vertical_scroll_offset(0.0);
+    }
+    let clicked = rows.show(ui, |ui| clip_rows(app, ui, seq, kind)).inner;
+    if let Some(cmd) = clicked {
+        if let Err(e) = crate::menus::invoke(app, ctx, cmd, json!({})) {
+            app.ui.status = e;
+        }
+        ui.close();
+    }
+}
+
+/// The rows of the clip menu; the command of the row that was clicked.
+fn clip_rows(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, kind: TrackKind) -> Option<&'static str> {
+    let sel = app.session.state.selection.clone();
+    let picked: Vec<&TrackItem> = sel.iter().filter_map(|c| seq.find_item(*c).map(|(_, it)| it)).collect();
+    let any = !sel.is_empty();
+    let all_enabled = !picked.is_empty() && picked.iter().all(|it| it.enabled);
+    let linked = picked.iter().any(|it| it.link.is_some());
+    // the label and the time interpolation the selected clips share
+    let shared_label = picked.first().map(|it| it.label).filter(|l| picked.iter().all(|it| it.label == *l));
+    let interpolation = picked.first().map(|it| it.time_interpolation).filter(|m| picked.iter().all(|it| it.time_interpolation == *m));
+    let checked = |cmd: &str| match cmd {
+        "clip.enable" => all_enabled,
+        _ => cmd.strip_prefix("clip.timeInterpolation.").is_some_and(|m| interpolation.is_some_and(|i| i.name() == m)),
+    };
+    let mut clicked = None;
+    for (i, group) in CLIP_MENU.iter().enumerate() {
+        if i > 0 {
+            crate::menus::separator(ui);
+        }
+        for row in *group {
+            match *row {
+                Cmd(label, cmd) => {
+                    let label = if cmd == "clip.link" && linked { "Unlink" } else { label };
+                    if clip_row(app, ui, label, cmd, any, checked(cmd)) {
+                        clicked = Some(cmd);
+                    }
+                }
+                Tbd(label) => {
+                    crate::menus::tbd(ui, label);
+                }
+                Sub(label, id, rows) => {
+                    let r = ui.menu_button(crate::menus::row_label(label), |ui| {
+                        for &(label, cmd) in rows {
+                            if clip_row(app, ui, label, cmd, any, checked(cmd)) {
+                                clicked = Some(cmd);
+                            }
+                        }
+                    });
+                    app.auto.add(&format!("timeline.clipMenu.{id}"), r.response.rect, label);
+                }
+                MultiCamera => multicam_menu(app, ui, &picked),
+                Labels => {
+                    let r = ui.menu_button(crate::menus::row_label("Label"), |ui| {
+                        if clip_row(app, ui, "Select Label Group", "edit.selectLabelGroup", any, false) {
+                            clicked = Some("edit.selectLabelGroup");
+                        }
+                        crate::menus::separator(ui);
+                        for l in filmcraft_project::Label::ALL {
+                            let r = crate::menus::entry(ui, l.name(), None, true, shared_label == Some(l));
+                            app.auto.add(&format!("timeline.clipMenu.edit.label.{}", l.name().to_lowercase()), r.rect, l.name());
+                            if r.clicked() {
+                                let _ = app.session.execute("edit.label", json!({"label": l.name()}));
+                                ui.close();
+                            }
+                        }
+                    });
+                    app.auto.add("timeline.clipMenu.edit.label", r.response.rect, "Label");
+                }
+                Keyframes => {
+                    let effects = if kind == TrackKind::Video { VIDEO_KEYFRAMES } else { AUDIO_KEYFRAMES };
+                    ui.menu_button(crate::menus::row_label("Show Clip Keyframes"), |ui| {
+                        for &(effect, properties) in effects {
+                            ui.menu_button(crate::menus::row_label(effect), |ui| {
+                                for property in properties {
+                                    crate::menus::tbd(ui, property);
+                                }
+                            });
+                        }
+                        crate::menus::separator(ui);
+                        crate::menus::tbd(ui, "Add Effects…");
+                    });
+                }
+            }
+        }
+    }
+    clicked
+}
+
+/// The time ruler's context menu, as Premiere's: (label, command id), on the sequence.
+const RULER_MENU: &[&[(&str, &str)]] = &[
+    &[("Mark In", "markers.markIn"), ("Mark Out", "markers.markOut"), ("Mark Clip", "markers.markClip"), ("Mark Selection", "markers.markSelection")],
+    &[("Go to In", "markers.goToIn"), ("Go to Out", "markers.goToOut")],
+    &[("Clear In", "markers.clearIn"), ("Clear Out", "markers.clearOut"), ("Clear In and Out", "markers.clearInOut")],
+    &[
+        ("Add Marker", "markers.add"),
+        ("Add Range Marker", "markers.addRange"),
+        ("Add Range Marker to In and Out", "markers.addRangeInOut"),
+        ("Go to Next Marker", "markers.goNext"),
+        ("Go to Previous Marker", "markers.goPrev"),
+    ],
+    &[("Clear Selected Marker", "markers.clearCurrent"), ("Clear Markers", "markers.clearAll")],
+    &[("Edit Marker…", "")],
+    &[("Add Chapter Marker…", "markers.addChapter"), ("Add Flash Cue Marker…", "markers.addFlashCue")],
+    &[("Show Audio Time Units", ""), ("Time Ruler Numbers", "")],
+];
+
+fn ruler_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, ctx: &egui::Context) {
+    ui.set_min_width(220.0);
+    if let Some(cmd) = menu_rows(app, ui, "timeline.rulerMenu", RULER_MENU, |app, cmd| (app.session.is_enabled(cmd), false)) {
+        if let Err(e) = crate::menus::invoke(app, ctx, cmd, json!({})) {
+            app.ui.status = e;
+        }
+        ui.close();
+    }
+}
 
 /// The clip menu's Multi-Camera submenu: Enable, Flatten, and the cameras of the selected nested
 /// sequence clips (greyed out when none of the selected clips is a nested sequence).
@@ -1622,20 +2000,17 @@ fn multicam_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, picked: &[&TrackItem
     let shown = nests.first().and_then(|it| it.multicam).filter(|m| m.enabled).map(|m| m.angle as usize);
     let mut run: Option<(&str, Value)> = None;
     ui.add_enabled_ui(!nests.is_empty(), |ui| {
-        let r = ui.menu_button("Multi-Camera", |ui| {
-            for (label, cmd) in [(if enabled { "✓ Enable" } else { "Enable" }, "clip.multicamEnable"), ("Flatten", "clip.multicamFlatten")] {
-                let r = ui.add_enabled(app.session.is_enabled(cmd), egui::Button::new(label));
-                app.auto.add(&format!("timeline.clipMenu.{cmd}"), r.rect, label);
-                if r.clicked() {
+        let r = ui.menu_button(crate::menus::row_label("Multi-Camera"), |ui| {
+            for (label, cmd, checked) in [("Enable", "clip.multicamEnable", enabled), ("Flatten", "clip.multicamFlatten", false)] {
+                if clip_row(app, ui, label, cmd, true, checked) {
                     run = Some((cmd, json!({})));
                 }
             }
             if enabled && !cameras.is_empty() {
-                ui.separator();
+                crate::menus::separator(ui);
                 for (angle, name) in &cameras {
-                    let label = if shown == Some(*angle) { format!("✓ {name}") } else { name.clone() };
-                    let r = ui.button(&label);
-                    app.auto.add(&format!("timeline.clipMenu.multicam.camera.{angle}"), r.rect, &label);
+                    let r = crate::menus::entry(ui, name, None, true, shown == Some(*angle));
+                    app.auto.add(&format!("timeline.clipMenu.multicam.camera.{angle}"), r.rect, name);
                     if r.clicked() {
                         run = Some(("multicam.switchAngle", json!({"angle": angle, "clips": nests.iter().map(|it| it.id.0).collect::<Vec<_>>()})));
                     }
@@ -2050,60 +2425,25 @@ fn interact(app: &mut FilmcraftApp, ui: &mut egui::Ui, seq: &Sequence, layout: &
         }
     }
 
-    // ---- context menu on clips (right-clicking an unselected clip selects it first)
-    if resp.secondary_clicked()
-        && let Some(p) = resp.interact_pointer_pos()
-        && let Hit::Clip { clip, .. } = hit(seq, layout, p)
-        && !app.session.state.selection.contains(&clip)
-    {
-        let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
-    }
-    resp.context_menu(|ui| {
-        ui.set_min_width(220.0);
-        let sel = app.session.state.selection.clone();
-        let picked: Vec<&filmcraft_project::TrackItem> = sel.iter().filter_map(|c| seq.find_item(*c).map(|(_, it)| it)).collect();
-        let all_enabled = !picked.is_empty() && picked.iter().all(|it| it.enabled);
-        let linked = picked.iter().any(|it| it.link.is_some());
-        let mut first = true;
-        for group in CLIP_MENU {
-            if !std::mem::take(&mut first) {
-                ui.separator();
-            }
-            for &(label, cmd) in *group {
-                if cmd == "edit.label" {
-                    ui.menu_button(label, |ui| {
-                        for l in filmcraft_project::Label::ALL {
-                            if ui.button(l.name()).clicked() {
-                                let _ = app.session.execute("edit.label", json!({"label": l.name()}));
-                                ui.close();
-                            }
-                        }
-                    });
-                    continue;
-                }
-                if cmd == "clip.multicam" {
-                    multicam_menu(app, ui, &picked);
-                    continue;
-                }
-                let label = match cmd {
-                    "clip.enable" if all_enabled => "✓ Enable",
-                    "clip.link" if linked => "Unlink",
-                    _ => label,
-                };
-                let r = ui.add_enabled(!sel.is_empty() && app.session.is_enabled(cmd), egui::Button::new(label));
-                app.auto.add(&format!("timeline.clipMenu.{cmd}"), r.rect, label);
-                if r.clicked() {
-                    if cmd == "clip.speedDuration" {
-                        app.dialog = None;
-                        let _ = app.session.execute(cmd, json!({"speed": 50.0}));
-                    } else if let Err(e) = crate::menus::invoke(app, &ctx, cmd, json!({})) {
-                        app.ui.status = e;
-                    }
-                    ui.close();
-                }
-            }
+    // ---- context menus: a clip's (right-clicking an unselected clip selects it first) and the
+    // time ruler's. Empty track space and transitions have none.
+    if resp.secondary_clicked() {
+        app.tl.menu_at = resp.interact_pointer_pos().map(|p| hit(seq, layout, p));
+        if let Some(Hit::Clip { clip, .. }) = app.tl.menu_at
+            && !app.session.state.selection.contains(&clip)
+        {
+            let _ = app.session.execute("timeline.select", json!({"clips": [clip.0]}));
         }
-    });
+    }
+    match app.tl.menu_at {
+        Some(Hit::Clip { track, .. }) => {
+            let kind = seq.track(track).map_or(TrackKind::Video, |tr| tr.kind);
+            let opened = resp.secondary_clicked();
+            crate::menus::context_menu(&resp, |ui| clip_menu(app, ui, &ctx, seq, kind, opened));
+        }
+        Some(Hit::Ruler) => crate::menus::context_menu(&resp, |ui| ruler_menu(app, ui, &ctx)),
+        _ => {}
+    }
 
     // ---- drops: project items and effects
     if let Some(item) = crate::panels::dragged_project_item(ui)

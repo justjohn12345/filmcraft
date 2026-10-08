@@ -581,7 +581,7 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
             ui.painter().rect_filled(r, 3.0, t.hover);
         }
         icons::paint(ui.painter(), r.shrink(5.0), Icon::SortIcons, t.icon);
-        egui::Popup::menu(&resp).show(|ui| sort_icons_menu(app, ui, pre, actions));
+        egui::Popup::menu(&resp).style(crate::theme::menu_style).show(|ui| sort_icons_menu(app, ui, pre, actions));
     }
     let mut rx = bar.max.x - 6.0;
     for (icon, id, tip) in [
@@ -599,7 +599,7 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, bar: Rect, v: &View, action
         }
         icons::paint(ui.painter(), r.shrink(5.0), icon, t.icon);
         if id == "new-item" {
-            egui::Popup::menu(&resp).show(|ui| new_item_menu(app, ui, pre, actions));
+            egui::Popup::menu(&resp).style(crate::theme::menu_style).show(|ui| new_item_menu(app, ui, pre, actions));
         } else if resp.clicked() {
             match id {
                 "find" => actions.push(("edit.find".into(), json!({}))),
@@ -628,7 +628,7 @@ pub const NEW_ITEMS: [(&str, &str); 8] = [
 
 pub fn new_item_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, pre: &str, actions: &mut Actions) {
     for (label, c) in NEW_ITEMS {
-        let b = ui.button(label);
+        let b = crate::menus::entry(ui, label, None, true, false);
         app.auto.add(&format!("{pre}.newItem.{c}"), b.rect, label);
         if b.clicked() {
             actions.push((c.into(), json!({})));
@@ -645,15 +645,15 @@ fn sort_icons_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui, pre: &str, actions
     }
     for (col, label) in entries {
         let on = cur.column == col;
-        let r = ui.selectable_label(on, &label);
+        let r = crate::menus::entry(ui, &label, None, true, on);
         app.auto.add(&format!("{pre}.sortIcons.{}", if col.is_empty() { "userOrder" } else { col.as_str() }), r.rect, &label);
         if r.clicked() {
             actions.push(("project.view.set".into(), json!({"iconSort": {"column": col, "descending": false}})));
             ui.close();
         }
     }
-    ui.separator();
-    let r = ui.selectable_label(cur.descending, "Descending");
+    crate::menus::separator(ui);
+    let r = crate::menus::entry(ui, "Descending", None, true, cur.descending);
     app.auto.add(&format!("{pre}.sortIcons.descending"), r.rect, "Descending");
     if r.clicked() {
         actions.push(("project.view.set".into(), json!({"iconSort": {"descending": !cur.descending}})));

@@ -69,10 +69,10 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
             }
             elems.push(("reference.picture".into(), area, "reference scopes".into()));
             let resp = ui.interact(area, egui::Id::new("reference-area"), Sense::click());
-            egui::Popup::context_menu(&resp).show(|ui| {
+            crate::menus::context_menu(&resp, |ui| {
                 for k in ScopeKind::ALL {
                     let on = st.scopes.contains(&k);
-                    let r = ui.selectable_label(on, k.label());
+                    let r = crate::menus::entry(ui, k.label(), None, true, on);
                     elems.push((format!("reference.scope.{}", k.name()), r.rect, k.label().into()));
                     if r.clicked() {
                         let v = &mut app.ui.panels.reference.scopes;

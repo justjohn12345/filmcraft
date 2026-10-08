@@ -100,7 +100,7 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     // right-click anywhere on the scopes: the settings menu
     let resp = ui.interact(area, egui::Id::new("scopes-area"), Sense::click());
-    egui::Popup::context_menu(&resp).show(|ui| settings_menu(app, ui));
+    crate::menus::context_menu(&resp, |ui| settings_menu(app, ui));
     footer(app, ui, Rect::from_min_max(pos2(rect.min.x, area.max.y), rect.max), sf.as_ref().map(|s| s.space));
 }
 
@@ -137,7 +137,7 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, space: Option<Colo
     let wresp = ui.interact(wr, egui::Id::new("scopes-wrench"), Sense::click());
     icons::paint(ui.painter(), wr.shrink(4.0), Icon::Wrench, if wresp.hovered() { t.tab_text_active } else { t.icon });
     app.auto.add("scopes.wrench", wr, "Scope settings");
-    egui::Popup::menu(&wresp).show(|ui| settings_menu(app, ui));
+    egui::Popup::menu(&wresp).style(crate::theme::menu_style).show(|ui| settings_menu(app, ui));
     // only what the footer itself changed (the wrench menu above may have changed more)
     let st = &mut app.ui.panels.scopes;
     if scale != scale0 {
@@ -153,7 +153,7 @@ fn footer(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, space: Option<Colo
 type Picks = Vec<(String, Rect, String, bool)>;
 
 fn pick(ui: &mut egui::Ui, out: &mut Picks, id: &str, label: &str, on: bool) {
-    let r = ui.selectable_label(on, label);
+    let r = crate::menus::entry(ui, label, None, true, on);
     out.push((id.to_string(), r.rect, label.to_string(), r.clicked()));
 }
 
@@ -162,13 +162,13 @@ pub fn settings_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
     ui.set_min_width(220.0);
     let st = app.ui.panels.scopes.clone();
     let mut out: Picks = Vec::new();
-    let pr = ui.menu_button("Presets", |ui| {
+    let pr = ui.menu_button(crate::menus::row_label("Presets"), |ui| {
         for (i, p) in SCOPE_PRESETS.iter().enumerate() {
             pick(ui, &mut out, &format!("scopes.menu.preset.{i}"), p.0, st.preset == p.0);
         }
     });
     out.push(("scopes.menu.presets".into(), pr.response.rect, "Presets".into(), false));
-    ui.separator();
+    crate::menus::separator(ui);
     for k in ScopeKind::ALL {
         let label = match k {
             ScopeKind::Parade => format!("Parade ({})", st.parade_type.label()),
@@ -177,9 +177,9 @@ pub fn settings_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
         };
         pick(ui, &mut out, &format!("scopes.menu.{}", k.name()), &label, st.shown.contains(&k));
     }
-    ui.separator();
+    crate::menus::separator(ui);
     let sub = |ui: &mut egui::Ui, out: &mut Picks, id: &str, label: &str, f: &mut dyn FnMut(&mut egui::Ui, &mut Picks)| {
-        let r = ui.menu_button(label, |ui| f(ui, out));
+        let r = ui.menu_button(crate::menus::row_label(label), |ui| f(ui, out));
         out.push((format!("scopes.menu.{id}"), r.response.rect, label.into(), false));
     };
     sub(ui, &mut out, "paradeTypes", "Parade Type", &mut |ui, out| {
@@ -197,7 +197,7 @@ pub fn settings_menu(app: &mut FilmcraftApp, ui: &mut egui::Ui) {
             pick(ui, out, &format!("scopes.menu.targets.{}", serde_name(&v)), v.label(), st.targets == v);
         }
     });
-    ui.separator();
+    crate::menus::separator(ui);
     sub(ui, &mut out, "colorSpaces", "Colour Space", &mut |ui, out| {
         for c in ColorSpace::ALL {
             pick(ui, out, &format!("scopes.menu.colorSpace.{}", serde_name(&c)), c.label(), st.color_space == c);
